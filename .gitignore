@@ -84,7 +84,6 @@ poetry.lock
 
 # Project-specific
 /.pytest_cache/
-/test/__pycache__/
 opencode.json
 
 logs/*

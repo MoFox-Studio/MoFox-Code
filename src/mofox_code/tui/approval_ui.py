@@ -17,6 +17,7 @@ class ApprovalResult:
     """审批结果。"""
     decision: str   # "allow_once" | "allow_session" | "allow_forever" | "deny" | "auto_review_enable"
     prefix: str     # 用于 session/forever 规则的命令前缀
+    reason: str = ""  # 拒绝原因；仅 deny 时使用
 
 
 class ApprovalUI:
@@ -72,9 +73,15 @@ class ApprovalUI:
         )
 
     def parse_choice(self, choice: str, command: str) -> ApprovalResult | None:
-        """解析审批输入。无效输入返回 None。"""
+        """解析审批输入。
+
+        匹配 a/s/f/d/r 返回对应决策；空输入返回 None（需重试）；
+        其他任意输入视为拒绝，并携带用户输入作为拒绝原因。
+        """
         prefix = self._extract_prefix(command)
         normalized = choice.strip().lower()
+        if not normalized:
+            return None  # 空输入：要求重新输入
         match normalized:
             case "a":
                 return ApprovalResult(decision="allow_once", prefix="")
@@ -87,7 +94,8 @@ class ApprovalUI:
             case "r":
                 return ApprovalResult(decision="auto_review_enable", prefix="")
             case _:
-                return None
+                # 任意非快捷键输入 → 视为拒绝，保留原始文本作为原因
+                return ApprovalResult(decision="deny", prefix="", reason=choice.strip())
 
     async def show_approval_request(
         self,

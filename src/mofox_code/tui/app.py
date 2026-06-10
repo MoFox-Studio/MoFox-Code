@@ -16,7 +16,7 @@ from rich.text import Text
 from ..client import CodingAgentClient
 from ..config import ClientConfig
 from ..session import CheckpointInfo
-from .approval_ui import ApprovalUI
+from .approval_ui import ApprovalUI, ApprovalResult
 from .input_handler import InputHandler, BuiltinCommandType
 from .layout_manager import TUILayoutManager, InputRefreshRequested
 from .renderer import TUIRenderer
@@ -384,17 +384,19 @@ class TUIApp:
                 except InputRefreshRequested:
                     continue
                 except (EOFError, KeyboardInterrupt):
-                    result = self._approval_ui.parse_choice("d", command)
+                    result = ApprovalResult(decision="deny", prefix="")
                     break
 
                 result = self._approval_ui.parse_choice(choice, command)
-                if result is None:
-                    self._layout.append_body(
-                        Align.center(Text("  请输入 a/s/f/d/r", style=self._theme.dim))
-                    )
+                # 空输入仍需重试；非快捷键输入已由 parse_choice 自动转为 deny
 
             if result is None:
                 return
+
+            if result.decision == "deny" and result.reason:
+                self._layout.append_body(
+                    Text(f"  ❌ 已拒绝 — {result.reason}", style=self._theme.warning)
+                )
 
             if result.decision == "auto_review_enable":
                 await self._client.toggle_auto_review(True)
@@ -406,9 +408,14 @@ class TUIApp:
                 )
                 await self._client.send_approval(request_id, "allow_once")
             else:
-                await self._client.send_approval(
-                    request_id, result.decision, result.prefix
-                )
+                if result.reason:
+                    await self._client.send_approval(
+                        request_id, result.decision, result.prefix, result.reason
+                    )
+                else:
+                    await self._client.send_approval(
+                        request_id, result.decision, result.prefix
+                    )
         finally:
             self._handling_approval = False
             if not self._approval_queue and self._saved_input_draft is not None:

@@ -70,6 +70,7 @@ class TUILayoutManager:
         self._body_control = FormattedTextControl(self._get_body_text)
         self._separator_control = FormattedTextControl(self._get_separator_text)
         self._footer_hint_control = FormattedTextControl(self._get_footer_hint_text)
+        self._body_window: Window | None = None
         self._input_window = Window(
             BufferControl(buffer=self._input_buffer),
             height=Dimension(min=5, max=10),
@@ -344,13 +345,15 @@ class TUILayoutManager:
             content=self._footer_hint_control,
         )
 
+        self._body_window = Window(self._body_control, wrap_lines=True)
+
         root = HSplit(
             [
                 # 单行状态栏（无 Frame）
                 Window(self._header_control, height=1, dont_extend_height=True),
                 separator,
                 # Body 区域
-                Window(self._body_control, wrap_lines=True),
+                self._body_window,
                 separator,
                 # Composer 区域
                 footer_hint,
@@ -454,10 +457,16 @@ class TUILayoutManager:
 
     def _visible_body_height(self) -> int:
         """估算 body 区域可见高度。"""
+        if self._body_window is not None and self._body_window.render_info is not None:
+            return max(1, self._body_window.render_info.window_height)
+
         app = get_app_or_none()
         rows = app.output.get_size().rows if app is not None else 24
-        # 固定开销: header(1) + separator(1) + separator(1) + footer_hint(1) + input窗口(min 5) = 9
-        return max(6, rows - 9)
+        # 首帧 render_info 尚不可用时，保守按输入框最大高度估算。
+        # 如果按 min=5 估算而实际 input_window 被分配到 max=10，body 会返回过多行；
+        # prompt_toolkit Window 会从返回内容顶部裁剪，导致底部最新输出看起来被“吞掉”。
+        # 固定开销: header(1) + separator(1) + separator(1) + footer_hint(1) + input窗口(max 10) = 14
+        return max(1, rows - 14)
 
     def _max_body_scroll(self) -> int:
         """获取 body 最大滚动偏移。"""

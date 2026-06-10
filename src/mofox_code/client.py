@@ -112,15 +112,18 @@ class CodingAgentClient:
         await self.send_user_message(content, kind="guidance")
 
     async def send_approval(
-        self, request_id: str, decision: str, prefix: str = ""
+        self, request_id: str, decision: str, prefix: str = "", reason: str = ""
     ) -> None:
         """发送审批决策。"""
         self._session.is_agent_busy = True
-        await self.send("bash.approval", {
+        payload = {
             "request_id": request_id,
             "decision": decision,
             "prefix": prefix,
-        })
+        }
+        if reason:
+            payload["reason"] = reason
+        await self.send("bash.approval", payload)
         if self._session.pending_approval_request_id == request_id:
             self._session.pending_approval_request_id = None
 
