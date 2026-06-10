@@ -66,6 +66,7 @@ class TUIApp:
         self._pending_checkpoint_choice: list[CheckpointInfo] | None = None
         self._thinking_start_time: float = 0.0
         self._last_ctrl_c_time: float = 0.0
+        self._welcome_shown: bool = False  # 防止欢迎面板重复显示
 
         # 注册消息处理器
         self._client.on("session.ready", self._on_session_ready)
@@ -92,9 +93,6 @@ class TUIApp:
         self._layout.start()
         self._refresh_header(phase="connecting")
         self._layout.set_footer_prompt()
-
-        # 欢迎信息
-        self._renderer.render_welcome(self._config.server_url)
 
         try:
             await self._client.connect()
@@ -429,6 +427,7 @@ class TUIApp:
         title = payload.get("title", "")
         self._refresh_header(phase="ready")
         if title:
+            # 恢复会话：不显示艺术字 banner，仅显示恢复提示
             self._layout.append_body(
                 Text(
                     f"  ✅ 会话已恢复 — 标题: {title}",
@@ -436,12 +435,10 @@ class TUIApp:
                 )
             )
         else:
-            self._layout.append_body(
-                Text(
-                    f"  ✅ 会话已就绪 — 项目: {project}",
-                    style=self._theme.success,
-                )
-            )
+            # 新会话：显示艺术字欢迎面板（仅首次）
+            if not self._welcome_shown:
+                self._renderer.render_welcome()
+                self._welcome_shown = True
 
         # 渲染历史消息（恢复模式）
         history = payload.get("history", [])

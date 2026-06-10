@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+from pyfiglet import figlet_format
 from rich.console import Console, RenderableType
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -40,16 +41,36 @@ class TUIRenderer:
         else:
             self._console.print(renderable, **kwargs)
 
-    def render_welcome(self, server_url: str) -> None:
-        """显示欢迎界面。"""
-        ascii_art = (
-            "  ╔╦╗╔═╗╔═╗╔═╗═╗╔     ╔═╗╔═╗╔╦╗╔═╗\n"
-            "  ║║║║ ║╠╣ ║ ║╔╩╗     ║  ║ ║ ║║╠╣  \n"
-            "  ╩ ╩╚═╝╩  ╚═╝╩ ╩     ╚═╝╚═╝═╩╝╚═╝\n"
-        )
+    # 欢迎面板降级宽度阈值（低于此宽度时用简洁文本替代 figlet 艺术字）
+    _WELCOME_FIGLET_MIN_WIDTH = 70
+
+    def render_welcome(self, server_url: str | None = None) -> None:
+        """显示欢迎界面。
+
+        Args:
+            server_url: 服务端地址。为 None 时显示"会话已就绪"，
+                        否则显示"Connecting to {server_url}..."。
+        """
+        if self._console.width < self._WELCOME_FIGLET_MIN_WIDTH:
+            # 窄终端降级：用简洁文本标题替代 figlet 艺术字
+            content = Text()
+            content.append("Welcome from MoFox Code", style=f"bold {self._theme.accent}")
+            if server_url:
+                content.append(f"\n  Connecting to {server_url}...\n", style=self._theme.dim)
+            else:
+                content.append("\n  ✅ 会话已就绪\n", style=self._theme.success)
+            panel = Panel(content, title="MoFox Code", border_style=self._theme.panel_border)
+            self._print(panel)
+            return
+
+        # 宽终端：使用 figlet 艺术字
+        art = figlet_format("MoFox Code", font="slant")
         content = Text()
-        content.append(ascii_art, style=f"bold {self._theme.accent}")
-        content.append(f"\n  Connecting to {server_url}...\n", style=self._theme.dim)
+        content.append(art.rstrip(), style=f"bold {self._theme.accent}")
+        if server_url:
+            content.append(f"\n  Connecting to {server_url}...\n", style=self._theme.dim)
+        else:
+            content.append("\n  ✅ 会话已就绪\n", style=self._theme.success)
         panel = Panel(content, title="MoFox Code", border_style=self._theme.panel_border)
         self._print(panel)
 

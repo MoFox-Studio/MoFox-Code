@@ -9,6 +9,7 @@ authors = [{name = "MoFox Team"}]
 
 dependencies = [
     "prompt-toolkit>=3.0",
+    "pyfiglet>=1.0",
     "rich>=13.0",
     "websockets>=12.0",
 ]
