@@ -1,0 +1,262 @@
+{
+  "scout": {
+    "project_name": "mofox-code",
+    "tech_stack": [
+      "python",
+      ">=3.11",
+      "rich",
+      "websockets",
+      "prompt-toolkit",
+      "hatchling"
+    ],
+    "source_root": "src/",
+    "modules": [
+      {
+        "path": "src/mofox_code",
+        "description": "核心模块：CLI入口、WebSocket客户端、配置、会话管理",
+        "estimated_files": 6
+      },
+      {
+        "path": "src/mofox_code/tui",
+        "description": "TUI终端界面模块：应用主逻辑、审批UI、输入处理、渲染器、主题",
+        "estimated_files": 7
+      }
+    ],
+    "config_files": [
+      "pyproject.toml"
+    ],
+    "test_directory": null,
+    "build_system": "hatchling",
+    "key_files": [
+      "README.md",
+      "pyproject.toml",
+      "src/mofox_code/cli.py",
+      "src/mofox_code/__main__.py"
+    ]
+  },
+  "modules": [
+    {
+      "path": "src/mofox_code",
+      "report": {
+        "module_path": "src/mofox_code",
+        "purpose": "MoFox Code 是一个终端编程助手（TUI），提供与 Coding Agent 后端交互的 CLI 接口、WebSocket 客户端、会话管理和 Rich 终端渲染能力。用户可以通过终端与 AI 编程助手进行对话式交互，审批命令执行，查看文件变更和历史回滚。",
+        "key_classes": [
+          {
+            "name": "ClientConfig",
+            "file": "config.py",
+            "description": "客户端配置数据类 (dataclass)，包含 server_url / auto_review / theme / project_dir / verbose 字段，支持从 ~/.mofox-code/config.toml 文件加载，并允许 CLI 参数覆盖（优先级：CLI > 配置文件 > 默认值）"
+          },
+          {
+            "name": "CodingAgentClient",
+            "file": "client.py",
+            "description": "WebSocket 客户端，封装了连接建立（含重试）、消息发送/接收、会话初始化和关闭、审批/中断/回滚等业务消息方法。内部维护 ClientSession 状态，并通过消息处理器注册机制（on/receive_loop）将后端消息分发给 TUIApp"
+          },
+          {
+            "name": "ClientSession",
+            "file": "session.py",
+            "description": "客户端会话状态数据类，跟踪 session_id / project_name / phase / auto_review_enabled / checkpoints / is_agent_busy / pending_approval_request_id 等实时状态"
+          },
+          {
+            "name": "CheckpointInfo",
+            "file": "session.py",
+            "description": "Checkpoint 信息数据类，从后端接收，包含 id / step / tool / description / files_affected / reversible 字段"
+          },
+          {
+            "name": "TUIApp",
+            "file": "tui/app.py",
+            "description": "TUI 应用主类，协调所有组件：启动流程（欢迎→连接→初始化会话→主循环）、输入循环、内置命令分发、审批处理、注册并处理 16 种后端消息类型。是整个模块的核心编排器"
+          },
+          {
+            "name": "InputHandler",
+            "file": "tui/input_handler.py",
+            "description": "用户输入处理器，使用 prompt_toolkit 获取输入，解析 /exit /undo /rollback /history /status /auto-review /help /clear 等内置命令，提供帮助和 checkpoint 列表的 Rich 表格渲染"
+          },
+          {
+            "name": "BuiltinCommandType",
+            "file": "tui/input_handler.py",
+            "description": "内置命令枚举 (StrEnum)，定义 EXIT / CLEAR / UNDO / ROLLBACK / HISTORY / STATUS / AUTO_REVIEW / HELP / NONE 九种类型"
+          },
+          {
+            "name": "BuiltinCommandResult",
+            "file": "tui/input_handler.py",
+            "description": "内置命令解析结果数据类，包含 type 和 args 字段"
+          },
+          {
+            "name": "ApprovalUI",
+            "file": "tui/approval_ui.py",
+            "description": "Bash 命令审批交互组件，显示 Rich Panel 展示命令详情和自动审查结果，提供 a/s/f/d/r 五种选择（允许一次/会话/永久/拒绝/开启自动审查）"
+          },
+          {
+            "name": "ApprovalResult",
+            "file": "tui/approval_ui.py",
+            "description": "审批结果数据类，包含 decision (allow_once/allow_session/allow_forever/deny/auto_review_enable) 和命令前缀 prefix"
+          },
+          {
+            "name": "TUIRenderer",
+            "file": "tui/renderer.py",
+            "description": "基于 Rich 的终端渲染引擎，提供欢迎界面、状态栏、Agent 回复、思考过程、代码 Diff、实施计划、研究进度条、Bash 输出、文件变更、Checkpoint 通知、回滚结果、错误提示等 12+ 种场景的渲染方法"
+          },
+          {
+            "name": "StreamMarkdownRenderer",
+            "file": "tui/stream_renderer.py",
+            "description": "增量流式 Markdown 渲染器，接收流式文本 chunk，实时解析普通行和代码块（``` 分隔），代码块使用 Rich Syntax 带行号和高亮渲染"
+          },
+          {
+            "name": "Theme",
+            "file": "tui/themes.py",
+            "description": "不可变配色主题数据类 (frozen dataclass)，包含 16 个颜色字段和代码高亮主题名，提供 dark / light / monokai 三套预设"
+          }
+        ],
+        "key_functions": [
+          {
+            "name": "main",
+            "file": "cli.py",
+            "description": "CLI 入口函数（pyproject.toml 注册为 mofox-code 命令），解析参数→加载配置→实例化 TUIApp→asyncio.run(app.run())"
+          },
+          {
+            "name": "parse_args",
+            "file": "cli.py",
+            "description": "使用 argparse 解析五个 CLI 参数：--server / --auto-review / --theme / --project-dir / --verbose"
+          },
+          {
+            "name": "get_theme",
+            "file": "tui/themes.py",
+            "description": "按名称从 THEMES 字典获取 Theme 对象，未知名称回退到 DARK_THEME"
+          }
+        ],
+        "dependencies": [
+          "外部: rich>=13.0 (终端渲染)",
+          "外部: websockets>=12.0 (WebSocket 通信)",
+          "外部: prompt-toolkit>=3.0 (用户输入)",
+          "内部: tui.app → ..client, ..config, ..session, .approval_ui, .input_handler, .renderer, .stream_renderer, .themes",
+          "内部: client.py → .config, .session",
+          "内部: cli.py → .config, .tui.app",
+          "内部: tui/ 各组件 → .themes"
+        ],
+        "patterns": [
+          "消息分发/事件驱动模式: CodingAgentClient.on() 注册处理器，receive_loop 按 msg_type 分发",
+          "数据类模式: 所有数据模型使用 @dataclass 定义，简化序列化和状态管理",
+          "配置分层模式: 默认值 < TOML 配置文件 < CLI 参数覆盖",
+          "依赖注入: TUIApp 接收 ClientConfig/Console/Theme 等依赖",
+          "状态机: ClientSession.phase 在 connecting→researching→ready→thinking→coding→reviewing 间转换",
+          "流式渲染: StreamMarkdownRenderer 增量解析 Markdown，逐行刷新终端",
+          "组合模式: TUIApp 组合 InputHandler、ApprovalUI、TUIRenderer、StreamMarkdownRenderer、CodingAgentClient 完成完整 TUI 功能",
+          "重试模式: connect() 方法最多重试 3 次，间隔 2 秒"
+        ],
+        "public_api": [
+          "mofox-code CLI 命令 (pyproject.toml 注册为 console_scripts)",
+          "python -m mofox_code 启动",
+          "mofox_code.cli:main()",
+          "mofox_code.config.ClientConfig",
+          "mofox_code.client.CodingAgentClient",
+          "mofox_code.session.ClientSession, CheckpointInfo",
+          "mofox_code.tui.app.TUIApp",
+          "mofox_code.tui.input_handler.InputHandler, BuiltinCommandType, BuiltinCommandResult",
+          "mofox_code.tui.approval_ui.ApprovalUI, ApprovalResult",
+          "mofox_code.tui.renderer.TUIRenderer",
+          "mofox_code.tui.stream_renderer.StreamMarkdownRenderer",
+          "mofox_code.tui.themes.Theme, get_theme()"
+        ],
+        "summary": "MoFox Code 模块 (`src/mofox_code`) 是一个基于终端的 AI 编程助手客户端（Claude Code 风格），使用 asyncio 事件驱动架构。模块由 13 个 Python 文件组成，分为核心层 (cli/client/config/session) 和 TUI 渲染层 (tui/)。CLI 入口 (`cli.py`) 通过 argparse 解析参数后加载分层配置（默认值 → `~/.mofox-code/config.toml` → CLI 覆盖），然后启动 `TUIApp` 主循环。\n\n核心通信层中，`CodingAgentClient` 封装了 WebSocket 连接的建立（含 3 次重试）、消息收发和内置消息类型处理（session.init/close、user.message、bash.approval、checkpoint.rollback 等）。它维护一个 `ClientSession` 对象跟踪会话状态（phase 状态机、checkpoint 列表、审批状态）。消息接收循环"
+      },
+      "success": true
+    },
+    {
+      "path": "src/mofox_code/tui",
+      "report": {
+        "module_path": "src/mofox_code/tui",
+        "purpose": "TUI（终端用户界面）渲染组件，提供基于 Rich 库的全功能终端交互界面。负责管理应用主循环、Bash 命令审批交互、用户输入处理、消息渲染、流式 Markdown 增量输出以及主题配色系统，是 MoFox Code 客户端的终端前线。",
+        "key_classes": [
+          {
+            "name": "TUIApp",
+            "file": "app.py",
+            "description": "TUI 应用主入口。管理应用生命周期（连接、初始化、输入循环、关闭），通过事件驱动机制注册并分发来自后端的消息（session.ready, agent.text, bash.approval_request 等），协调审批 UI、输入处理和渲染器。"
+          },
+          {
+            "name": "ApprovalUI",
+            "file": "approval_ui.py",
+            "description": "终端内 Bash 命令审批交互组件。展示命令、工作目录、自动审查结果和决策选项（允许一次/始终允许/永远允许/拒绝/开启自动审查），等待用户输入并返回 ApprovalResult。"
+          },
+          {
+            "name": "ApprovalResult",
+            "file": "approval_ui.py",
+            "description": "审批结果数据类，包含 decision 字段（allow_once/allow_session/allow_forever/deny/auto_review_enable）和 prefix 字段（用于 session/forever 规则的命令前缀）。"
+          },
+          {
+            "name": "InputHandler",
+            "file": "input_handler.py",
+            "description": "用户输入处理器。基于 prompt_toolkit 的 PromptSession 实现异步多行输入，支持历史记录和 Ctrl+C 中断；提供内置命令（/exit, /clear, /undo, /rollback, /history, /status, /auto-review, /help）的识别、解析和帮助渲染。"
+          },
+          {
+            "name": "BuiltinCommandType",
+            "file": "input_handler.py",
+            "description": "内置命令类型枚举（EXIT / CLEAR / UNDO / ROLLBACK / HISTORY / STATUS / AUTO_REVIEW / HELP / NONE），标识用户输入的命令类别。"
+          },
+          {
+            "name": "BuiltinCommandResult",
+            "file": "input_handler.py",
+            "description": "内置命令解析结果数据类，包含 type（BuiltinCommandType）和 args（dict）字段。"
+          },
+          {
+            "name": "TUIRenderer",
+            "file": "renderer.py",
+            "description": "基于 Rich 的终端渲染引擎。提供欢迎界面、状态栏、Agent 回复、思考过程、代码差异、实施计划、研究进度（含 Progress 进度条）、Bash 输出、文件变更通知、Checkpoint 创建/回滚结果、错误提示、用户输入提示符等全套渲染方法。"
+          },
+          {
+            "name": "StreamMarkdownRenderer",
+            "file": "stream_renderer.py",
+            "description": "增量流式 Markdown 渲染器。接收流式文本 chunk，实时解析并渲染到终端；能识别代码块边界（```），对完整代码块使用 Rich Syntax 进行语法高亮渲染，普通文本行则直接输出。"
+          },
+          {
+            "name": "Theme",
+            "file": "themes.py",
+            "description": "不可变配色主题数据类，定义基础色（bg/fg/dim/accent/success/warning/error）、语义色（agent_text/user_prompt/thinking/status_bar 等）、面板边框色、Diff 颜色和代码高亮主题名。"
+          },
+          {
+            "name": "DARK_THEME / LIGHT_THEME / MONOKAI_THEME",
+            "file": "themes.py",
+            "description": "三个预定义的 Theme 实例，分别对应暗色（Catppuccin 风格）、亮色（Latte 风格）和 Monokai 风格配色方案。"
+          }
+        ],
+        "key_functions": [
+          {
+            "name": "get_theme",
+            "file": "themes.py",
+            "description": "简单工厂函数，根据名称从 THEMES 字典中查找 Theme 实例，未找到时返回 DARK_THEME 作为默认值。"
+          },
+          {
+            "name": "ApprovalUI._extract_prefix",
+            "file": "approval_ui.py",
+            "description": "静态方法，从命令字符串中提取第一个 token 作为命令前缀，用于定义审批规则的作用范围（如 'git'、'uv'、'python'）。"
+          }
+        ],
+        "dependencies": [
+          "src.mofox_code.client (CodingAgentClient) — WebSocket 客户端，驱动消息收发和 session 状态管理",
+          "src.mofox_code.config (ClientConfig) — 客户端配置，含 server_url、auto_review、theme、project_dir",
+          "src.mofox_code.session (CheckpointInfo, ClientSession) — 会话状态数据模型",
+          "rich (Console, Panel, Markdown, Syntax, Progress, Text, Table) — 终端富文本渲染引擎",
+          "prompt_toolkit (PromptSession) — 增强型终端输入组件（历史记录、多行、异步）"
+        ],
+        "patterns": [
+          "事件驱动模式：TUIApp 在初始化时通过 client.on() 注册 14 种消息处理器，后端消息到达后异步分发到对应处理方法",
+          "策略模式：Theme 数据类定义统一配色接口，get_theme 工厂函数根据名称选择具体主题策略，使用方无需关心主题细节",
+          "命令模式：BuiltinCommandType 枚举定义命令类型，InputHandler.parse_builtin_command 解析输入，TUIApp._handle_builtin 分发处理，实现命令的请求与执行分离",
+          "观察者模式：CodingAgentClient 维护消息处理器字典，receive_loop 收到消息后遍历调用已注册的 handler，TUIApp 作为观察者订阅特定事件",
+          "流式增量渲染：StreamMarkdownRenderer 维护行缓冲和代码块状态机，逐 chunk 解析并即时刷新终端，避免等待完整响应",
+          "数据类模式：ApprovalResult、BuiltinCommandResult、Theme、CheckpointInfo、ClientConfig、ClientSession 均使用 dataclass 定义纯数据容器",
+          "异步主循环：TUIApp 基于 asyncio，run() 中创建后台 recv_task，_input_loop 中轮询 agent 状态和待审批请求，实现非阻塞交互"
+        ],
+        "public_api": [
+          "TUIApp (app.py) — 主应用类，对外暴露 run() 启动方法",
+          "ApprovalUI / ApprovalResult (approval_ui.py) — 审批组件",
+          "InputHandler / BuiltinCommandType / BuiltinCommandResult (input_handler.py) — 输入处理",
+          "TUIRenderer (renderer.py) — 基础渲染引擎",
+          "StreamMarkdownRenderer (stream_renderer.py) — 流式渲染器",
+          "Theme / get_theme (themes.py) — 主题系统"
+        ],
+        "summary": "TUI 模块是 MoFox Code 客户端的终端交互核心，采用清晰的分层架构将界面职责拆分为 6 个子模块。**app.py** 中的 TUIApp 作为主控制器，通过事件驱动机制与后端 WebSocket 客户端通信，管理应用从启动欢迎、会话初始化、自动审查配置到主输入循环的完整生命周期。输入循环中巧妙处理了 agent 忙碌等待、待审批请求拦截和内置命令分发三种场景，确保用户体验流畅。\n\n**渲染层**由 renderer.py（静态/完整内容渲染）和 stream_renderer.py（增量流式渲染）组成，均基于 Rich 库实现高质量的终端输出。StreamMarkdownRenderer 采用行缓冲状态机设计，能实时解析 Markdown 代码块边界，对完整代码块应用 Syntax 高亮。**审批UI**（approval_ui.py）和 **输入处理**（input_handler.py）各自封装了独立的交互逻辑，前者通过 Rich Panel 展示命令审批面板并等待用户决策，后者基于 prompt_toolkit 提供增强输入体验并支持 8 种内置斜杠命令。\n\n**主题系统**（themes.py）定义了包含 17 个颜色属性的 Theme 数据类，预置 dark/light/monokai 三套完整方案，通过 get_theme 工厂函数实现低耦合的主题切换。整个模块的外部依赖集中在 client、config、session 三个同级模块，形成清晰的单向依赖链：TUIApp → CodingAgentClient → WebSocket，符合关注点分离原则。"
+      },
+      "success": true
+    }
+  ]
+}
