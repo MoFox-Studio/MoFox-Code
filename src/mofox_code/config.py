@@ -22,6 +22,20 @@ class ClientConfig:
         if not self.project_dir:
             self.project_dir = str(Path.cwd())
 
+    @staticmethod
+    def _generate_default_config(config_file: Path) -> None:
+        """首次运行时生成默认配置文件。"""
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(
+            '[server]\n'
+            'url = "ws://localhost:8765/coding-agent/ws"\n'
+            '\n'
+            '[preferences]\n'
+            'theme = "dark"\n'
+            'auto_review = false\n',
+            encoding="utf-8",
+        )
+
     @classmethod
     def load(cls, overrides: dict | None = None) -> ClientConfig:
         """加载配置。
@@ -30,22 +44,23 @@ class ClientConfig:
         """
         config = cls()
 
-        # 尝试读取配置文件
+        # 读取/生成配置文件
         config_file = config.config_dir / "config.toml"
-        if config_file.exists():
-            try:
-                import tomllib
-                data = tomllib.loads(config_file.read_text(encoding="utf-8"))
-                server_cfg = data.get("server", {})
-                if "url" in server_cfg:
-                    config.server_url = server_cfg["url"]
-                prefs = data.get("preferences", {})
-                if "theme" in prefs:
-                    config.theme = prefs["theme"]
-                if "auto_review" in prefs:
-                    config.auto_review = bool(prefs["auto_review"])
-            except Exception:
-                pass
+        if not config_file.exists():
+            config._generate_default_config(config_file)
+        try:
+            import tomllib
+            data = tomllib.loads(config_file.read_text(encoding="utf-8"))
+            server_cfg = data.get("server", {})
+            if "url" in server_cfg:
+                config.server_url = server_cfg["url"]
+            prefs = data.get("preferences", {})
+            if "theme" in prefs:
+                config.theme = prefs["theme"]
+            if "auto_review" in prefs:
+                config.auto_review = bool(prefs["auto_review"])
+        except Exception:
+            pass
 
         # 应用 CLI overrides
         if overrides:
