@@ -19,7 +19,7 @@ class CommandCompleter(Completer):
         "/exit", "/clear", "/undo", "/rollback", "/history",
         "/status", "/auto-review on", "/auto-review off",
         "/help", "/session", "/session resume", "/session delete",
-        "/link", "/new",
+        "/link", "/new", "/yolo", "/goal",
     ]
     
     def get_completions(self, document, complete_event):
@@ -39,6 +39,8 @@ class BuiltinCommandType(str, Enum):
     HISTORY = "history"
     STATUS = "status"
     AUTO_REVIEW = "auto_review"
+    YOLO = "yolo"
+    GOAL = "goal"
     HELP = "help"
     SESSION = "session"
     LINK = "link"
@@ -148,6 +150,13 @@ class InputHandler:
                 return BuiltinCommandResult(BuiltinCommandType.NONE)
             case "/new":
                 return BuiltinCommandResult(BuiltinCommandType.NEW)
+            case "/yolo":
+                return BuiltinCommandResult(BuiltinCommandType.YOLO)
+            case cmd if cmd.startswith("/goal"):
+                goal_text = arg.strip()
+                if not goal_text:
+                    return BuiltinCommandResult(BuiltinCommandType.NONE)
+                return BuiltinCommandResult(BuiltinCommandType.GOAL, {"text": goal_text})
             case "/help":
                 return BuiltinCommandResult(BuiltinCommandType.HELP)
             case _:
@@ -166,6 +175,8 @@ class InputHandler:
         table.add_row("/history", "查看操作历史")
         table.add_row("/status", "查看当前状态")
         table.add_row("/auto-review on/off", "切换自动命令审查")
+        table.add_row("/yolo", "切换无审查模式（跳过所有命令审批）")
+        table.add_row("/goal <目标>", "进入目标模式，自动审查直到达标")
         table.add_row("/clear", "清屏")
         table.add_row("/link <路径>", "关联外部项目目录")
         table.add_row("/new", "开启新对话")

@@ -6,7 +6,7 @@ import asyncio
 import json
 import sys
 import time
-from typing import Any, Callable, Awaitable
+from typing import Callable, Awaitable
 from uuid import uuid4
 
 import websockets
@@ -39,8 +39,9 @@ class CodingAgentClient:
         self._message_handlers[message_type] = handler
 
     async def connect(self) -> None:
-        """建立 WebSocket 连接。"""
+        """建立 WebSocket 连接。内置最多 3 次重试，每次间隔 2 秒。"""
         max_retries = 3
+        last_error: Exception | None = None
         for attempt in range(max_retries):
             try:
                 self._ws = await websockets.connect(
@@ -51,10 +52,12 @@ class CodingAgentClient:
                 self._connected = True
                 return
             except Exception as e:
+                last_error = e
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2)
-                else:
-                    raise ConnectionError(f"无法连接到 {self._config.server_url}: {e}")
+        raise ConnectionError(
+            f"无法连接到 {self._config.server_url}（已重试 {max_retries} 次）: {last_error}"
+        )
 
     async def disconnect(self) -> None:
         """断开连接。"""
@@ -65,6 +68,8 @@ class CodingAgentClient:
 
     async def send(self, msg_type: str, payload: dict | None = None) -> str:
         """发送消息到后端。"""
+        if not self.is_connected or self._ws is None:
+            raise ConnectionError("WebSocket 未连接，无法发送消息")
         msg = {
             "type": msg_type,
             "id": str(uuid4()),
@@ -136,6 +141,18 @@ class CodingAgentClient:
         await self.send("auto_review.toggle", {"enabled": enabled})
         self._session.auto_review_enabled = enabled
 
+    async def toggle_yolo(self, enabled: bool) -> None:
+        """切换 YOLO 无审查模式。"""
+        await self.send("yolo.toggle", {"enabled": enabled})
+        self._session.yolo_mode = enabled
+
+    async def send_goal(self, text: str) -> None:
+        """设定目标并进入目标模式。"""
+        await self.send("goal.set", {"text": text})
+        await self.send_user_message(f"【目标】{text}")
+        self._session.goal_mode = True
+        self._session.goal_text = text
+
     async def request_rollback(
         self, mode: str = "last", checkpoint_id: str = ""
     ) -> None:
@@ -158,8 +175,13 @@ class CodingAgentClient:
         await self.init_session()
 
     async def receive_loop(self) -> None:
-        """消息接收循环（在后台 task 中运行）。"""
+        """消息接收循环（在后台 task 中运行）。
+
+        连接断开时设置 _connected=False 并退出循环，
+        由调用方（TUIApp.run）负责检测并显示错误提示。
+        """
         while self._connected:
+            msg_type = "?"  # 防止 JSON 解析阶段异常导致 NameError
             try:
                 raw = await self._ws.recv()
                 msg = json.loads(raw)
@@ -189,8 +211,13 @@ class CodingAgentClient:
                 if handler:
                     await handler(payload)
 
-            except websockets.ConnectionClosed:
+            except websockets.ConnectionClosed as e:
                 self._connected = False
+                # 区分正常关闭与异常断开
+                if e.code in (1000, 1001):
+                    sys.stderr.write(f"[ws] 连接正常关闭 (code={e.code})\n")
+                else:
+                    sys.stderr.write(f"[ws] 连接异常断开 (code={e.code}: {e.reason})\n")
                 break
             except Exception as e:
                 if not self._connected:

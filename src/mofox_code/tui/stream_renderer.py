@@ -24,7 +24,7 @@ class StreamMarkdownRenderer:
 
     _INIT_INTERVAL: float = 0.05   # 50ms — 初始节流
     _MAX_INTERVAL: float = 0.20    # 200ms — 持续流式最大间隔
-    _RAMP_THRESHOLD: float = 3.0   # 连续流式 3 秒后开始提速
+    _RAMP_THRESHOLD: float = 3.0   # 连续流式 3 秒后逐步放宽节流间隔，降低 CPU 开销
     _RAMP_FACTOR: float = 1.5      # 每次 ramp 乘数
 
     def __init__(

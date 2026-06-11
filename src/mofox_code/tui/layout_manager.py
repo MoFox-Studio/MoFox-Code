@@ -129,7 +129,9 @@ class TUILayoutManager:
         self._invalidate()
 
     def build_header(
-        self, server: str, project: str, phase: str, auto_review: bool, checkpoint_count: int = 0
+        self, server: str, project: str, phase: str, auto_review: bool, checkpoint_count: int = 0,
+        yolo_mode: bool = False,
+        goal_mode: bool = False,
     ) -> None:
         """构建标准 header 内容。"""
         phase_icons = {
@@ -152,6 +154,12 @@ class TUILayoutManager:
             ("class:status-bar", f"auto-review:{'ON' if auto_review else 'OFF'} "),
             ("class:status-bar", f"cp:{checkpoint_count}"),
         ]
+        
+        if yolo_mode:
+            header_parts.append(("class:status-bar", " ⚡YOLO"))
+        
+        if goal_mode:
+            header_parts.append(("class:status-bar", " 🎯GOAL"))
         
         header_text = FormattedText(header_parts)
         self.update_header(header_text)
@@ -217,6 +225,16 @@ class TUILayoutManager:
     def set_footer_prompt(self) -> None:
         """设置标准输入提示 footer。"""
         self._footer_hint = "输入消息或 /help 查看命令"
+        self._invalidate()
+
+    def set_footer_hint(self, hint: str) -> None:
+        """设置自定义 footer 提示文本。"""
+        self._footer_hint = hint
+        self._invalidate()
+
+    def set_footer_hint(self, hint: str) -> None:
+        """设置自定义 footer 提示文本。"""
+        self._footer_hint = hint
         self._invalidate()
 
     # ─── 输入 ───
@@ -397,7 +415,7 @@ class TUILayoutManager:
             if now - self._last_invalidate_time >= _INVALIDATE_MIN_INTERVAL:
                 self._last_invalidate_time = now
                 self._application.invalidate()
-            elif not getattr(self, '_invalidate_scheduled', False):
+            elif not self._invalidate_scheduled:
                 # 安排一次延迟补发，确保最终状态一定刷新
                 self._invalidate_scheduled = True
                 try:
@@ -429,9 +447,9 @@ class TUILayoutManager:
                 legacy_windows=False,
             )
             self._render_console_width = width
-        else:
-            self._render_buffer.truncate(0)
-            self._render_buffer.seek(0)
+        # 每次渲染前清空缓冲区，防止终端 resize 时旧内容残留
+        self._render_buffer.truncate(0)
+        self._render_buffer.seek(0)
         self._render_console.print(renderable)
         return self._render_buffer.getvalue().rstrip("\n")
 

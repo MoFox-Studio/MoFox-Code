@@ -85,6 +85,7 @@ class TUIApp:
         self._client.on("session.list_result", self._on_session_list_result)
         self._client.on("session.delete_result", self._on_session_delete_result)
         self._client.on("link.result", self._on_link_result)
+        self._client.on("goal.complete", self._on_goal_complete)
         self._client.on("error", self._on_error)
 
     async def run(self) -> None:
@@ -121,7 +122,13 @@ class TUIApp:
                 Text("  👋 再见！", style=self._theme.dim)
             )
         finally:
+            # 在断开连接前检查是否因连接丢失而退出
+            connection_lost = not self._client.is_connected
             self._running = False
+            if connection_lost:
+                self._layout.append_body(
+                    Text("  ⚠️ 与后端的连接已断开", style=self._theme.error)
+                )
             await self._client.close_session()
             await self._client.disconnect()
             recv_task.cancel()
@@ -136,6 +143,8 @@ class TUIApp:
             phase=phase or session.phase,
             auto_review=session.auto_review_enabled,
             checkpoint_count=len(session.checkpoints),
+            yolo_mode=session.yolo_mode,
+            goal_mode=session.goal_mode,
         )
 
     # ─── 输入循环 ───
@@ -261,7 +270,7 @@ class TUIApp:
                 checkpoints = self._client.session.checkpoints
                 if not checkpoints:
                     self._layout.append_body(
-                        Text("  暂无操作历史", style=self._theme.dim)
+                        Text("  暂无操作历史（注意：恢复的会话不保留历史 checkpoint）", style=self._theme.dim)
                     )
                 else:
                     self._input_handler.render_checkpoint_list(checkpoints)
@@ -287,6 +296,30 @@ class TUIApp:
                 )
                 # 更新 header
                 self._refresh_header()
+
+            case BuiltinCommandType.YOLO:
+                new_state = not self._client.session.yolo_mode
+                await self._client.toggle_yolo(new_state)
+                state = "ON" if new_state else "OFF"
+                self._layout.append_body(
+                    Text(
+                        f"  ⚡ YOLO 模式已{'开启' if new_state else '关闭'} ({state})",
+                        style=self._theme.accent if new_state else self._theme.dim,
+                    )
+                )
+                self._refresh_header()
+
+            case BuiltinCommandType.GOAL:
+                text = cmd.args.get("text", "")
+                if text:
+                    await self._client.send_goal(text)
+                    self._layout.append_body(
+                        Text(
+                            f"  🎯 目标已设定: {text}",
+                            style=self._theme.accent,
+                        )
+                    )
+                    self._refresh_header()
 
             case BuiltinCommandType.SESSION:
                 action = cmd.args.get("action", "")
@@ -423,7 +456,6 @@ class TUIApp:
     # ─── 消息处理器 ───
 
     async def _on_session_ready(self, payload: dict) -> None:
-        project = payload.get("project_name", "")
         title = payload.get("title", "")
         self._refresh_header(phase="ready")
         if title:
@@ -439,6 +471,13 @@ class TUIApp:
             if not self._welcome_shown:
                 self._renderer.render_welcome()
                 self._welcome_shown = True
+
+        # 如果 working_directory 不匹配，显示警告
+        mismatch_warning = payload.get("working_directory_mismatch", "")
+        if mismatch_warning:
+            self._layout.append_body(
+                Text(f"  ⚠️ {mismatch_warning}", style=self._theme.warning)
+            )
 
         # 渲染历史消息（恢复模式）
         history = payload.get("history", [])
@@ -519,7 +558,7 @@ class TUIApp:
             else:
                 # 如果 _active_agent_index 不为 None，说明之前已有流式渲染
                 # 跳过显示"模型未返回文本输出"，避免覆盖已流式输出的内容
-                if self._active_agent_index is None:
+                if self._active_agent_index is None and source != "coder":
                     self._layout.append_body(
                         Text("  （模型未返回文本输出）", style=self._theme.dim)
                     )
@@ -556,7 +595,8 @@ class TUIApp:
                         self._active_agent_index,
                         thinking_panel,
                     )
-                    self._active_agent_index += 1
+                    # Re-derive: thinking inserted before agent, shifts agent right by 1
+                    self._active_agent_index = self._active_thinking_index + 1
                 else:
                     self._active_thinking_index = self._layout.append_body(
                         thinking_panel
@@ -650,6 +690,12 @@ class TUIApp:
             payload.get("warnings", []),
         )
         self._layout.append_body(Text(""))
+        # 清理已回滚的 checkpoints
+        rolled_back = payload.get("rolled_back_checkpoints", [])
+        if rolled_back:
+            self._client.session.remove_checkpoints(set(rolled_back))
+        # 更新 header（checkpoint 数量变化）
+        self._refresh_header()
 
     async def _on_checkpoint_list_result(self, payload: dict) -> None:
         """收到 checkpoint 列表后，展示并等待用户选择回滚目标。"""
@@ -737,6 +783,15 @@ class TUIApp:
                 Text(error_text, style=self._theme.error)
             )
 
+    async def _on_goal_complete(self, payload: dict) -> None:
+        """处理 goal.complete 消息。"""
+        self._client.session.goal_mode = False
+        self._client.session.goal_text = ""
+        self._layout.append_body(
+            Text("  🎯 目标已完成 ✓", style=self._theme.success)
+        )
+        self._refresh_header()
+
     async def _on_error(self, payload: dict) -> None:
         self._renderer.render_error(payload.get("message", "未知错误"))
 
@@ -764,8 +819,9 @@ class TUIApp:
     def _set_input_footer(self, busy: bool) -> None:
         """根据当前是否忙碌更新输入提示。"""
         if busy:
-            self._layout._footer_hint = "Agent 工作中，可直接输入补充引导；系统会在当前回合结束后继续处理"
-            self._layout._invalidate()
+            self._layout.set_footer_hint(
+                "Agent 工作中，可直接输入补充引导；系统会在当前回合结束后继续处理"
+            )
             return
         self._layout.set_footer_prompt()
 
@@ -809,7 +865,7 @@ class TUIApp:
 
     def _update_agent_stream(self, renderable: RenderableType, source: str = "agent") -> None:
         """就地更新当前 agent 回复，Agent 用绿色边框，Coder 用橙色边框。"""
-        label = self._source_label(source)
+        label = self._renderer._format_source_label(source)
         # Agent=success绿, Coder=warning橙, 其他=accent蓝
         border_color = {
             "Agent": self._theme.success,
@@ -828,17 +884,9 @@ class TUIApp:
         else:
             self._layout.update_body_item(self._active_agent_index, message)
 
-    @staticmethod
-    def _source_label(source: str) -> str:
-        normalized = (source or "agent").strip().lower()
-        if normalized == "coder":
-            return "Coder"
-        if normalized in {"agent", "main"}:
-            return "Agent"
-        return normalized.replace("_", " ").title()
 
     def _thinking_title(self, source: str) -> str:
-        label = self._source_label(source)
+        label = self._renderer._format_source_label(source)
         if label == "Agent":
             return "🧠 Thinking"
         return f"🧠 {label} Thinking"
