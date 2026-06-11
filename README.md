@@ -14,12 +14,31 @@ Neo-MoFox Coding Agent 的终端前端（TUI），Claude Code 风格的终端编
 ## 环境要求
 
 - Python >= 3.11
-- 一个运行中的 [Coding Agent 后端服务](https://github.com/your-org/coding-agent)
+
+## 前置条件
+
+mofox-code 是 Neo-MoFox Coding Agent 的前端客户端，使用前需要先部署后端。
+
+**后端仓库**：[Windpicker-owo/coding_agent](https://github.com/Windpicker-owo/coding_agent)
+
+coding_agent 作为 Neo-MoFox 的插件运行，部署在 [Neo-MoFox](https://github.com/Windpicker-owo/Neo-MoFox) 框架上。简要部署步骤：
+
+1. 按照 Neo-MoFox 文档部署框架
+2. 在 plugins 目录下克隆 coding_agent 插件
+3. 编辑 `config/model.toml` 配置 5 个模型任务（详见后端 README）：
+   - `coding_main` — 主编排器（理解需求、制定计划）
+   - `coding_researcher` — 模块研究员（分析代码）
+   - `coding_coder` — 编码员（实施代码变更）
+   - `coding_reviewer` — 命令安全审查
+   - `coding_title` — 会话标题生成
+4. 启动 Neo-MoFox，插件会在 `ws://localhost:8765/coding-agent/ws` 监听 WebSocket 连接
+
+> 模型配置是后端的关键步骤，请务必参照后端 README 中的说明完成配置。
 
 ## 安装
 
 ```bash
-git clone https://github.com/your-org/mofox-code.git
+git clone https://github.com/MoFox-Studio/MoFox-Code.git
 cd mofox-code
 pip install -e .
 ```
@@ -48,6 +67,21 @@ auto_review = false
 | `server.url` | 后端 WebSocket 地址 | `ws://localhost:8765/coding-agent/ws` |
 | `preferences.theme` | 配色主题 | `dark` |
 | `preferences.auto_review` | 是否启用自动审查 | `false` |
+
+## 首次使用
+
+以下是完整的首次使用流程，从零开始跑通 mofox-code：
+
+1. **部署后端** — 按照[前置条件](#前置条件)中的步骤，部署 Neo-MoFox + coding_agent 插件，完成 5 个模型任务的配置
+2. **克隆并安装 mofox-code** — 执行[安装](#安装)中的命令
+3. **（可选）编辑配置文件** — 如果后端地址非默认，编辑 `~/.mofox-code/config.toml` 中的 `server.url`
+4. **启动** — 先启动 Neo-MoFox 后端，然后在终端运行：
+   ```bash
+   mofox-code
+   # 或在特定项目目录下：
+   mofox-code --project-dir .
+   ```
+5. **等待项目研究** — 首次进入项目时，Agent 会自动触发项目侦察（Scout）和深度研究（Researcher），完成后即可开始对话
 
 ## CLI 参数
 
