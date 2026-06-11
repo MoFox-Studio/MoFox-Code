@@ -1,6 +1,6 @@
 [project]
 name = "mofox-code"
-version = "0.1.0"
+version = "0.1.1"
 description = "Neo-MoFox Coding Agent TUI - Claude Code 风格的终端编程助手"
 readme = "README.md"
 requires-python = ">=3.11"

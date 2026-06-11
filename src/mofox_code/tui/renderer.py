@@ -114,9 +114,20 @@ class TUIRenderer:
         """渲染思考过程。"""
         self._print(self.build_thinking(content))
 
-    def build_thinking(self, content: str, title: str = "🧠 Thinking") -> Panel:
-        """构建思考过程面板。"""
-        display_text = Text(content, style=self._theme.thinking)
+    def build_thinking(self, content: str, title: str = "🧠 Thinking", anim_dots: int = 0) -> Panel:
+        """构建思考过程面板。
+
+        Args:
+            content: 思考文本内容。
+            title: 面板标题。
+            anim_dots: 动画点数（0=不显示，1-3=循环点动画）。
+        """
+        display_content = content
+        if anim_dots > 0 and (not content or content.strip() == "正在思考..."):
+            # 占位文本加动画点
+            dots_str = "." * anim_dots
+            display_content = f"正在思考{dots_str}"
+        display_text = Text(display_content, style=self._theme.thinking)
         return Panel(
             display_text,
             title=title,
@@ -178,6 +189,7 @@ class TUIRenderer:
         active_agents: list[dict] | None = None,
         scope_summary: str = "",
         ignored_patterns_count: int = 0,
+        shimmer_offset: int = 0,
     ) -> None:
         """渲染研究进度。"""
         self._print(
@@ -188,6 +200,7 @@ class TUIRenderer:
                 active_agents=active_agents,
                 scope_summary=scope_summary,
                 ignored_patterns_count=ignored_patterns_count,
+                shimmer_offset=shimmer_offset,
             )
         )
 
@@ -199,12 +212,23 @@ class TUIRenderer:
         active_agents: list[dict] | None = None,
         scope_summary: str = "",
         ignored_patterns_count: int = 0,
+        shimmer_offset: int = 0,
     ) -> Panel:
-        """构建 research 进度面板，避免直接写入终端。"""
+        """构建 research 进度面板，避免直接写入终端。
+
+        Args:
+            shimmer_offset: 流光偏移位置（0 表示不显示流光效果）。
+        """
         safe_total = max(total, 1)
         safe_completed = max(0, min(completed, safe_total))
-        filled = int((safe_completed / safe_total) * 24)
-        bar = "█" * filled + "·" * (24 - filled)
+        bar_width = 24
+        filled = int((safe_completed / safe_total) * bar_width)
+
+        # 构建带流光效果的进度条
+        if shimmer_offset > 0 and filled > 0:
+            bar = self._build_shimmer_bar(filled, bar_width, shimmer_offset)
+        else:
+            bar = "█" * filled + "·" * (bar_width - filled)
 
         content = Text()
         content.append("  Research ", style=f"bold {self._theme.accent}")
@@ -252,6 +276,41 @@ class TUIRenderer:
         if normalized == "agent":
             return "Agent"
         return normalized.replace("_", " ").title()
+
+    @staticmethod
+    def _build_shimmer_bar(filled: int, bar_width: int, shimmer_offset: int) -> str:
+        """构建带流光效果的进度条。
+
+        已填充部分使用 █/▓/▒ 混合渲染，产生移动亮斑效果。
+
+        Args:
+            filled: 已填充格数。
+            bar_width: 进度条总宽度。
+            shimmer_offset: 流光亮斑的起始位置。
+
+        Returns:
+            进度条字符串。
+        """
+        chars: list[str] = []
+        shimmer_len = 3  # 亮斑宽度
+        for i in range(bar_width):
+            if i >= filled:
+                chars.append("·")
+            else:
+                # 计算相对于亮斑的位置
+                pos = i - shimmer_offset
+                # 规范到 [0, bar_width) 区间处理循环
+                if pos < 0:
+                    pos += bar_width
+                if 0 <= pos < shimmer_len:
+                    # 亮斑区域：▓ █ ▓ 渐变
+                    if pos == 1:
+                        chars.append("█")
+                    else:
+                        chars.append("▓")
+                else:
+                    chars.append("▒")
+        return "".join(chars)
 
     def render_bash_output(self, output: str, is_stderr: bool, exit_code: int | None = None) -> None:
         """渲染 bash 命令输出。"""

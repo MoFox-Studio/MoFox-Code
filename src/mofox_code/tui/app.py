@@ -16,6 +16,7 @@ from rich.text import Text
 from ..client import CodingAgentClient
 from ..config import ClientConfig
 from ..session import CheckpointInfo
+from .animation import AnimationManager
 from .approval_ui import ApprovalUI, ApprovalResult
 from .input_handler import InputHandler, BuiltinCommandType
 from .layout_manager import TUILayoutManager, InputRefreshRequested
@@ -39,6 +40,9 @@ class TUIApp:
         # 布局管理器
         self._layout = TUILayoutManager(self._console, self._theme)
 
+        # 动画管理器（后台 tick 驱动 header spinner / shimmer / thinking dots）
+        self._anim = AnimationManager(on_tick=self._on_anim_tick)
+
         # 渲染组件（注入 output 回调）
         self._renderer = TUIRenderer(
             self._console, self._theme, output=self._append_body_output
@@ -53,9 +57,6 @@ class TUIApp:
 
         # 审批队列；同一轮多个 bash 可能并发发来多个审批请求
         self._approval_queue: deque[dict] = deque()
-        self._active_agent_index: int | None = None
-        self._active_thinking_index: int | None = None
-        self._active_research_index: int | None = None
         self._active_stream_source = "agent"
         self._last_status_phase: str | None = None
         self._session_list_cache: list[dict] = []  # 缓存的会话列表（供 resume/delete 编号引用）
@@ -95,10 +96,14 @@ class TUIApp:
         self._refresh_header(phase="connecting")
         self._layout.set_footer_prompt()
 
+        # 启动动画循环
+        self._anim.start()
+
         try:
             await self._client.connect()
         except Exception as e:
             self._renderer.render_error(f"无法连接到后端: {e}")
+            self._anim.stop()
             self._layout.stop()
             return
 
@@ -129,6 +134,8 @@ class TUIApp:
                 self._layout.append_body(
                     Text("  ⚠️ 与后端的连接已断开", style=self._theme.error)
                 )
+            self._anim.stop()
+            self._layout.set_footer_spinner(False)
             await self._client.close_session()
             await self._client.disconnect()
             recv_task.cancel()
@@ -162,7 +169,9 @@ class TUIApp:
                 continue
 
             # 更新 footer 为输入提示
-            self._set_input_footer(self._client.session.is_agent_busy)
+            busy = self._client.session.is_agent_busy
+            self._set_input_footer(busy)
+            self._layout.set_footer_spinner(busy)
 
             # 获取用户输入
             try:
@@ -231,8 +240,8 @@ class TUIApp:
             return await self._handle_builtin(result)
 
         if not busy:
-            self._active_agent_index = None
-            self._active_thinking_index = None
+            self._layout.del_slot("agent")
+            self._layout.del_slot("thinking")
             self._stream_renderer = None
 
         self._append_user_message(text, is_guidance=busy)
@@ -366,8 +375,7 @@ class TUIApp:
                 # 重置前端状态
                 self._layout.clear_body()
                 self._stream_renderer = None
-                self._active_agent_index = None
-                self._active_thinking_index = None
+                # clear_body 已自动清空所有命名槽位（agent/thinking/research）
                 self._active_stream_source = "agent"
                 self._refresh_header(phase="connecting")
                 await self._client.new_session()
@@ -502,25 +510,43 @@ class TUIApp:
         # 在 body 中显示状态信息
         self._renderer.render_agent_status(detail, source=source)
 
+        # 动画启停：thinking/coding/researching → 启动动画；ready → 停止
+        if phase in ("thinking", "coding", "researching"):
+            self._anim.start()
+        elif phase == "ready":
+            self._anim.stop()
+
+        # 同步 footer spinner 可见性（agent busy 状态可能已变化）
+        self._layout.set_footer_spinner(self._client.session.is_agent_busy)
+
         if phase == "thinking":
             if self._last_status_phase != "thinking" and (
-                self._active_agent_index is not None
-                or self._active_thinking_index is not None
+                self._layout.get_slot("agent") is not None
+                or self._layout.get_slot("thinking") is not None
             ) and self._stream_renderer is None:
                 # 仅当没有活跃流时才关闭上轮残留（避免截断正在输出的文本）
                 self._close_active_response_segment()
 
-            if self._active_thinking_index is None:
+            if self._layout.get_slot("thinking") is None:
                 self._active_stream_source = source
-                placeholder = self._renderer.build_thinking(
-                    "正在思考...",
-                    title=self._thinking_title(source),
-                )
-                self._active_thinking_index = self._layout.append_body(placeholder)
+                
+                # 工厂函数：每帧用最新 anim_dots 重新生成 thinking 占位面板
+                def _make_thinking_placeholder() -> RenderableType:
+                    dots = AnimationManager.dots(self._anim.frame, 3)
+                    return self._renderer.build_thinking(
+                        "正在思考...",
+                        title=self._thinking_title(source),
+                        anim_dots=len(dots),
+                    )
+                
+                placeholder = _make_thinking_placeholder()
+                thinking_idx = self._layout.append_body(placeholder)
+                self._layout.set_slot("thinking", thinking_idx)
+                self._layout.mark_body_animated(thinking_idx, _make_thinking_placeholder)
                 self._thinking_start_time = time.monotonic()
         elif phase == "ready":
             self._collapse_active_thinking_if_needed()
-            self._active_research_index = None
+            self._layout.del_slot("research")
 
         self._last_status_phase = phase
 
@@ -531,8 +557,8 @@ class TUIApp:
 
         if not is_final:
             if self._active_stream_source != source and (
-                self._active_agent_index is not None
-                or self._active_thinking_index is not None
+                self._layout.get_slot("agent") is not None
+                or self._layout.get_slot("thinking") is not None
             ):
                 self._close_active_response_segment()
             self._active_stream_source = source
@@ -556,16 +582,16 @@ class TUIApp:
                     Markdown(content, style=self._theme.agent_text)
                 )
             else:
-                # 如果 _active_agent_index 不为 None，说明之前已有流式渲染
+                # 如果 agent slot 不为 None，说明之前已有流式渲染
                 # 跳过显示"模型未返回文本输出"，避免覆盖已流式输出的内容
-                if self._active_agent_index is None and source != "coder":
+                if self._layout.get_slot("agent") is None and source != "coder":
                     self._layout.append_body(
                         Text("  （模型未返回文本输出）", style=self._theme.dim)
                     )
 
             self._collapse_active_thinking_if_needed()
-            self._active_agent_index = None
-            self._active_thinking_index = None
+            self._layout.del_slot("agent")
+            self._layout.del_slot("thinking")
             self._active_stream_source = "agent"
             # 添加空行分隔
             self._layout.append_body(Text(""))
@@ -574,9 +600,14 @@ class TUIApp:
         content = payload.get("content", "")
         source = payload.get("source", "agent")
         if content and content.strip():
+            # 收到实际思考内容，取消占位动画
+            thinking_idx = self._layout.get_slot("thinking")
+            if thinking_idx is not None:
+                self._layout.unmark_body_animated(thinking_idx)
+            
             if self._active_stream_source != source and (
-                self._active_agent_index is not None
-                or self._active_thinking_index is not None
+                self._layout.get_slot("agent") is not None
+                or self._layout.get_slot("thinking") is not None
             ):
                 self._close_active_response_segment()
             self._active_stream_source = source
@@ -589,22 +620,20 @@ class TUIApp:
                 content,
                 title=self._thinking_title(source),
             )
-            if self._active_thinking_index is None:
-                if self._active_agent_index is not None:
-                    self._active_thinking_index = self._layout.insert_body(
-                        self._active_agent_index,
+            if thinking_idx is None:
+                agent_idx = self._layout.get_slot("agent")
+                if agent_idx is not None:
+                    thinking_idx = self._layout.insert_body(
+                        agent_idx,
                         thinking_panel,
                     )
-                    # Re-derive: thinking inserted before agent, shifts agent right by 1
-                    self._active_agent_index = self._active_thinking_index + 1
+                    self._layout.set_slot("thinking", thinking_idx)
+                    # agent slot 已在 insert_body 内部通过 _fix_indices_after_insert 自动 +1
                 else:
-                    self._active_thinking_index = self._layout.append_body(
-                        thinking_panel
-                    )
+                    thinking_idx = self._layout.append_body(thinking_panel)
+                    self._layout.set_slot("thinking", thinking_idx)
             else:
-                self._layout.update_body_item(
-                    self._active_thinking_index, thinking_panel
-                )
+                self._layout.update_body_item(thinking_idx, thinking_panel)
 
     async def _on_tool_call(self, payload: dict) -> None:
         # tool.call 是一段 assistant 文本的边界：
@@ -659,21 +688,37 @@ class TUIApp:
         active_agents = payload.get("active_agents", [])
         scope_summary = payload.get("scope_summary", "")
         ignored_patterns_count = payload.get("ignored_patterns_count", 0)
-        panel = self._renderer.build_research_progress(
-            total,
-            completed,
-            current_module,
-            active_agents=active_agents,
-            scope_summary=scope_summary,
-            ignored_patterns_count=ignored_patterns_count,
-        )
-        if self._active_research_index is None:
-            self._active_research_index = self._layout.append_body(panel)
+        
+        # 工厂函数：每帧用最新 shimmer_offset 重新生成进度面板
+        def _make_research_panel() -> RenderableType:
+            shimmer = AnimationManager.shimmer_offset(self._anim.frame, 24)
+            return self._renderer.build_research_progress(
+                total,
+                completed,
+                current_module,
+                active_agents=active_agents,
+                scope_summary=scope_summary,
+                ignored_patterns_count=ignored_patterns_count,
+                shimmer_offset=shimmer,
+            )
+        
+        panel = _make_research_panel()
+        research_idx = self._layout.get_slot("research")
+        if research_idx is None:
+            research_idx = self._layout.append_body(panel)
+            self._layout.set_slot("research", research_idx)
+            self._layout.mark_body_animated(research_idx, _make_research_panel)
+            self._anim.start()
         else:
-            self._layout.update_body_item(self._active_research_index, panel)
+            # 先更新工厂（_sync_scroll_to_bottom 触发 _body_lines 时会用到），再更新条目
+            self._layout.mark_body_animated(research_idx, _make_research_panel)
+            self._layout.update_body_item(research_idx, panel)
 
         if total and completed >= total:
-            self._active_research_index = None
+            if research_idx is not None:
+                self._layout.unmark_body_animated(research_idx)
+            self._layout.del_slot("research")
+            self._anim.stop()
 
     async def _on_checkpoint_created(self, payload: dict) -> None:
         self._renderer.render_checkpoint_created(
@@ -839,6 +884,11 @@ class TUIApp:
         self._layout.append_body(Text(""))
         self._layout.append_body(panel)
 
+    def _on_anim_tick(self) -> None:
+        """动画帧回调：同步帧号到布局并触发重绘。"""
+        self._layout.set_anim_frame(self._anim.frame)
+        self._layout._invalidate()
+
     def _close_active_response_segment(self) -> None:
         """结束当前一轮 agent/thinking 的流式更新槽位。
 
@@ -849,18 +899,27 @@ class TUIApp:
         if self._stream_renderer:
             self._stream_renderer.finalize()
         self._collapse_active_thinking_if_needed()
+        # 清理动画标记
+        agent_idx = self._layout.get_slot("agent")
+        thinking_idx = self._layout.get_slot("thinking")
+        if agent_idx is not None:
+            self._layout.unmark_body_animated(agent_idx)
+        if thinking_idx is not None:
+            self._layout.unmark_body_animated(thinking_idx)
         self._stream_renderer = None
-        self._active_agent_index = None
-        self._active_thinking_index = None
+        self._layout.del_slot("agent")
+        self._layout.del_slot("thinking")
         self._active_stream_source = "agent"
 
     def _collapse_active_thinking_if_needed(self) -> None:
         """如果当前有活跃的 thinking 段，将其折叠为摘要行。"""
-        if self._active_thinking_index is not None and self._thinking_start_time > 0:
+        thinking_idx = self._layout.get_slot("thinking")
+        if thinking_idx is not None and self._thinking_start_time > 0:
+            self._layout.unmark_body_animated(thinking_idx)
             duration = time.monotonic() - self._thinking_start_time
             collapsed = self._renderer.build_thinking_collapsed(duration)
-            self._layout.update_body_item(self._active_thinking_index, collapsed)
-            self._active_thinking_index = None
+            self._layout.update_body_item(thinking_idx, collapsed)
+            self._layout.del_slot("thinking")
             self._thinking_start_time = 0.0
 
     def _update_agent_stream(self, renderable: RenderableType, source: str = "agent") -> None:
@@ -879,10 +938,12 @@ class TUIApp:
             title_align="left",
             expand=True,
         )
-        if self._active_agent_index is None:
-            self._active_agent_index = self._layout.append_body(message)
+        agent_idx = self._layout.get_slot("agent")
+        if agent_idx is None:
+            idx = self._layout.append_body(message)
+            self._layout.set_slot("agent", idx)
         else:
-            self._layout.update_body_item(self._active_agent_index, message)
+            self._layout.update_body_item(agent_idx, message)
 
 
     def _thinking_title(self, source: str) -> str:

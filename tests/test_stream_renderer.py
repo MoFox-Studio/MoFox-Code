@@ -101,6 +101,117 @@ class TUILayoutManagerTest(unittest.TestCase):
         asyncio.run(runner())
 
 
+class SlotMechanismTest(unittest.TestCase):
+    """命名槽位（slot）机制单元测试：验证裁剪/插入时索引自动修正。"""
+
+    def setUp(self) -> None:
+        self.console = Console(record=True, width=80)
+        self.layout = TUILayoutManager(self.console, DARK_THEME)
+
+    def test_append_body_overflow_fixes_slot_indices(self) -> None:
+        """超过 MAX_BODY_ITEMS 后 slot 索引正确修正。"""
+        old_max = TUILayoutManager.MAX_BODY_ITEMS
+        TUILayoutManager.MAX_BODY_ITEMS = 5
+        try:
+            for i in range(7):
+                idx = self.layout.append_body(Text(f"item {i}"))
+            # body 已裁剪到后 5 条 (item 2..6)，slot 设为 item 5
+            self.layout.set_slot("test", 3)  # item 5 的相对索引
+            # 再追加触发裁剪
+            self.layout.append_body(Text("item 7"))
+            # slot 应从 3 减到 2（overflow=1）
+            self.assertEqual(self.layout.get_slot("test"), 2)
+        finally:
+            TUILayoutManager.MAX_BODY_ITEMS = old_max
+
+    def test_append_body_overflow_drops_out_of_range_slot(self) -> None:
+        """裁剪后越界的 slot 自动删除。"""
+        old_max = TUILayoutManager.MAX_BODY_ITEMS
+        TUILayoutManager.MAX_BODY_ITEMS = 3
+        try:
+            for i in range(4):
+                self.layout.append_body(Text(f"item {i}"))
+            # slot 在索引 0（即将被裁剪）
+            self.layout.set_slot("ghost", 0)
+            # 追加触发裁剪，overflow=1，slot 0→-1 应删除
+            self.layout.append_body(Text("item 4"))
+            self.assertIsNone(self.layout.get_slot("ghost"))
+        finally:
+            TUILayoutManager.MAX_BODY_ITEMS = old_max
+
+    def test_insert_body_shifts_slots_at_or_after_target(self) -> None:
+        """insert_body 后 >= target 的 slot 自动 +1。"""
+        self.layout.append_body(Text("A"))
+        self.layout.append_body(Text("B"))
+        self.layout.append_body(Text("C"))
+        self.layout.set_slot("b", 1)  # B
+        self.layout.set_slot("c", 2)  # C
+        # 在 index 1 插入
+        self.layout.insert_body(1, Text("X"))
+        # slot "b" 从 1→2, "c" 从 2→3
+        self.assertEqual(self.layout.get_slot("b"), 2)
+        self.assertEqual(self.layout.get_slot("c"), 3)
+
+    def test_insert_body_overflow_fixes_indices_correctly(self) -> None:
+        """insert_body 触发裁剪后 slot 和返回索引正确。"""
+        old_max = TUILayoutManager.MAX_BODY_ITEMS
+        TUILayoutManager.MAX_BODY_ITEMS = 3
+        try:
+            self.layout.append_body(Text("A"))
+            self.layout.append_body(Text("B"))
+            self.layout.append_body(Text("C"))
+            self.layout.set_slot("c", 2)
+            # 在头部插入，触发裁剪（移除的是刚插入的 X，不是 A）
+            result = self.layout.insert_body(0, Text("X"))
+            # overflow=1: 头部 X 被裁剪，C 回到索引 2，slot 不变
+            self.assertEqual(self.layout.get_slot("c"), 2)
+            # 返回索引也已修正（X 被裁掉后 result=0 指向剩余的第一项）
+            self.assertEqual(result, 0)
+        finally:
+            TUILayoutManager.MAX_BODY_ITEMS = old_max
+
+    def test_clear_body_clears_all_slots(self) -> None:
+        """clear_body 清空所有命名槽位。"""
+        self.layout.append_body(Text("A"))
+        self.layout.set_slot("agent", 0)
+        self.layout.set_slot("thinking", 0)
+        self.layout.clear_body()
+        self.assertIsNone(self.layout.get_slot("agent"))
+        self.assertIsNone(self.layout.get_slot("thinking"))
+        self.assertEqual(len(self.layout._body_items), 0)
+
+    def test_animated_indices_fixed_after_trim(self) -> None:
+        """动画索引在裁剪后正确修正。"""
+        old_max = TUILayoutManager.MAX_BODY_ITEMS
+        TUILayoutManager.MAX_BODY_ITEMS = 3
+        try:
+            from collections.abc import Callable
+            from rich.console import RenderableType
+
+            for i in range(4):
+                self.layout.append_body(Text(f"item {i}"))
+            factory: Callable[[], RenderableType] = lambda: Text("anim")
+            self.layout.mark_body_animated(2, factory)
+            self.layout.mark_body_animated(3, factory)
+            # 追加触发裁剪 overflow=1
+            self.layout.append_body(Text("item 4"))
+            # 动画索引从 {2,3} → {1,2}
+            self.assertIn(1, self.layout._animated_body_indices)
+            self.assertIn(2, self.layout._animated_body_indices)
+        finally:
+            TUILayoutManager.MAX_BODY_ITEMS = old_max
+
+    def test_get_set_del_slot_basic(self) -> None:
+        """基本 slot get/set/del 操作。"""
+        self.assertIsNone(self.layout.get_slot("nonexistent"))
+        self.layout.set_slot("test", 42)
+        self.assertEqual(self.layout.get_slot("test"), 42)
+        self.layout.del_slot("test")
+        self.assertIsNone(self.layout.get_slot("test"))
+        # 重复删除不报错
+        self.layout.del_slot("test")
+
+
 class TUIAppBehaviorTest(unittest.IsolatedAsyncioTestCase):
     async def test_thinking_is_inserted_before_agent_stream(self) -> None:
         app = TUIApp(ClientConfig())
@@ -108,8 +219,8 @@ class TUIAppBehaviorTest(unittest.IsolatedAsyncioTestCase):
         app._update_agent_stream(Text("reply"))
         await app._on_agent_thinking({"content": "analysis"})
 
-        self.assertIn("Thinking", app._layout._body_items[0])
-        self.assertIn("Agent", app._layout._body_items[1])
+        self.assertIn("Thinking", app._layout._body_items[0][1])
+        self.assertIn("Agent", app._layout._body_items[1][1])
 
     async def test_research_progress_updates_same_slot(self) -> None:
         app = TUIApp(ClientConfig())
@@ -122,7 +233,7 @@ class TUIAppBehaviorTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(app._layout._body_items), 1)
-        self.assertIn("beta", app._layout._body_items[0])
+        self.assertIn("beta", app._layout._body_items[0][1])
 
     async def test_research_progress_renders_active_agents_and_gitignore_scope(self) -> None:
         app = TUIApp(ClientConfig())
@@ -144,7 +255,7 @@ class TUIAppBehaviorTest(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        body = app._layout._body_items[0]
+        body = app._layout._body_items[0][1]
         self.assertIn("researcher-1", body)
         self.assertIn(".gitignore", body)
         self.assertIn("src/kernel", body)
@@ -165,7 +276,7 @@ class TUIAppBehaviorTest(unittest.IsolatedAsyncioTestCase):
         await app._handle_pending_approval()
 
         app._client.send_approval.assert_awaited_once_with("req-1", "allow_once", "")
-        self.assertTrue(any("git status" in item for item in app._layout._body_items))
+        self.assertTrue(any("git status" in item[1] for item in app._layout._body_items))
 
     async def test_approval_request_refreshes_current_input(self) -> None:
         app = TUIApp(ClientConfig())
@@ -213,7 +324,7 @@ class TUIAppBehaviorTest(unittest.IsolatedAsyncioTestCase):
         app._client.toggle_auto_review.assert_awaited_once_with(True)
         self.assertEqual(app._client.send_approval.await_args_list[0].args, ("req-1", "allow_once"))
         self.assertEqual(app._client.send_approval.await_args_list[1].args, ("req-2", "allow_once", ""))
-        self.assertTrue(any("自动审查已开启" in item for item in app._layout._body_items))
+        self.assertTrue(any("自动审查已开启" in item[1] for item in app._layout._body_items))
 
     async def test_busy_text_is_sent_as_guidance_without_resetting_stream(self) -> None:
         app = TUIApp(ClientConfig())
@@ -232,8 +343,8 @@ class TUIAppBehaviorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(app._stream_renderer)
         # body_items: [0]=空行, [1]=Panel(title="Guidance", ...)
         self.assertEqual(len(app._layout._body_items), 2)
-        self.assertIn("Guidance", app._layout._body_items[1])
-        self.assertIn("请优先改测试", app._layout._body_items[1])
+        self.assertIn("Guidance", app._layout._body_items[1][1])
+        self.assertIn("请优先改测试", app._layout._body_items[1][1])
 
     async def test_tool_call_starts_new_agent_segment(self) -> None:
         app = TUIApp(ClientConfig())
@@ -243,18 +354,18 @@ class TUIAppBehaviorTest(unittest.IsolatedAsyncioTestCase):
         await app._on_agent_text({"content": "second", "is_final": False})
 
         self.assertEqual(len(app._layout._body_items), 4)  # agent + tool + 空行 + agent
-        self.assertIn("first", app._layout._body_items[0])
-        self.assertIn("bash", app._layout._body_items[1])
-        self.assertIn("ls", app._layout._body_items[1])
-        self.assertIn("second", app._layout._body_items[3])
+        self.assertIn("first", app._layout._body_items[0][1])
+        self.assertIn("bash", app._layout._body_items[1][1])
+        self.assertIn("ls", app._layout._body_items[1][1])
+        self.assertIn("second", app._layout._body_items[3][1])
 
     async def test_tool_call_planning_stage_is_visible_immediately(self) -> None:
         app = TUIApp(ClientConfig())
 
         await app._on_tool_call({"name": "write_plan", "args_summary": "", "stage": "planning"})
 
-        self.assertIn("write_plan", app._layout._body_items[0])
-        self.assertIn("...", app._layout._body_items[0])  # planning indicator
+        self.assertIn("write_plan", app._layout._body_items[0][1])
+        self.assertIn("...", app._layout._body_items[0][1])  # planning indicator
 
     async def test_coder_stream_uses_coder_label(self) -> None:
         app = TUIApp(ClientConfig())
@@ -263,7 +374,7 @@ class TUIAppBehaviorTest(unittest.IsolatedAsyncioTestCase):
             {"content": "正在修改文件", "is_final": False, "source": "coder"}
         )
 
-        self.assertIn("Coder", app._layout._body_items[0])
+        self.assertIn("Coder", app._layout._body_items[0][1])
 
     async def test_new_thinking_phase_starts_new_thinking_segment(self) -> None:
         app = TUIApp(ClientConfig())
@@ -274,7 +385,7 @@ class TUIAppBehaviorTest(unittest.IsolatedAsyncioTestCase):
         await app._on_agent_status({"phase": "thinking", "detail": "second pass"})
         await app._on_agent_thinking({"content": "analysis two"})
 
-        thinking_segments = [item for item in app._layout._body_items if "Thinking" in item]
+        thinking_segments = [item[1] for item in app._layout._body_items if "Thinking" in item[1]]
         self.assertEqual(len(thinking_segments), 2)
         # First thinking should be collapsed after tool_call
         self.assertIn("Thinking (", thinking_segments[0])
@@ -445,15 +556,15 @@ class Phase1BehaviorTest(unittest.IsolatedAsyncioTestCase):
         await app._on_agent_thinking({"content": "deep thinking"})
         
         # 找到 thinking 面板的位置
-        thinking_index = app._active_thinking_index
+        thinking_index = app._layout.get_slot("thinking")
         self.assertIsNotNone(thinking_index)
-        self.assertIn("deep thinking", app._layout._body_items[thinking_index])
+        self.assertIn("deep thinking", app._layout._body_items[thinking_index][1])
         
         # tool call 触发折叠
         await app._on_tool_call({"name": "bash", "args_summary": "ls"})
         
         # thinking 应该被折叠（原位置）
-        collapsed_item = app._layout._body_items[thinking_index]
+        collapsed_item = app._layout._body_items[thinking_index][1]
         self.assertIn("Thinking (", collapsed_item)
         self.assertNotIn("deep thinking", collapsed_item)
 
@@ -467,8 +578,9 @@ class Phase1BehaviorTest(unittest.IsolatedAsyncioTestCase):
         await app._on_agent_thinking({"content": "step 2"})
         
         # thinking 应该保持展开
-        self.assertIsNotNone(app._active_thinking_index)
-        thinking_item = app._layout._body_items[app._active_thinking_index]
+        thinking_index = app._layout.get_slot("thinking")
+        self.assertIsNotNone(thinking_index)
+        thinking_item = app._layout._body_items[thinking_index][1]
         self.assertIn("step 2", thinking_item)
         self.assertNotIn("Thinking (", thinking_item)
 

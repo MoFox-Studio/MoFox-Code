@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from io import StringIO
 
 from prompt_toolkit.application import Application
@@ -51,7 +52,13 @@ class TUILayoutManager:
     def __init__(self, console: Console, theme: Theme) -> None:
         self._console = console
         self._theme = theme
-        self._body_items: list[str] = []
+        self._body_items: list[tuple[RenderableType, str]] = []
+        self._last_render_width: int = 0
+        # 动画槽位：需要每帧重新渲染的 body 条目索引 → 工厂函数
+        self._animated_body_indices: set[int] = set()
+        self._body_anim_factories: dict[int, Callable[[], RenderableType]] = {}
+        # 命名槽位：字符串名称 → body 物理索引，裁剪/插入时自动修正
+        self._slots: dict[str, int] = {}
         self._application: Application | None = None
         self._application_task: asyncio.Task[None] | None = None
         self._input_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -64,9 +71,13 @@ class TUILayoutManager:
         )
         self._body_scroll = 0
         self._follow_output = True
+        self._footer_spinner_visible: bool = False
         self._footer_hint = "Enter 发送 | Ctrl+J 换行 | Ctrl+C 中断 | /help"
         self._header_content: RenderableType = Text("")
         self._header_control = FormattedTextControl(self._get_header_text)
+        # 动态 header 数据（由 build_header 存入，_get_header_text 动态生成）
+        self._header_data: dict = {}
+        self._anim_frame: int = 0
         self._body_control = FormattedTextControl(self._get_body_text)
         self._separator_control = FormattedTextControl(self._get_separator_text)
         self._footer_hint_control = FormattedTextControl(self._get_footer_hint_text)
@@ -133,45 +144,33 @@ class TUILayoutManager:
         yolo_mode: bool = False,
         goal_mode: bool = False,
     ) -> None:
-        """构建标准 header 内容。"""
-        phase_icons = {
-            "connecting": "🔌",
-            "researching": "🔍",
-            "ready": "✅",
-            "thinking": "🧠",
-            "coding": "⚡",
-            "reviewing": "🔍",
-            "error": "❌",
+        """构建标准 header 内容（存储原始数据，由 _get_header_text 动态生成）。"""
+        self._header_data = {
+            "server": server,
+            "project": project,
+            "phase": phase,
+            "auto_review": auto_review,
+            "checkpoint_count": checkpoint_count,
+            "yolo_mode": yolo_mode,
+            "goal_mode": goal_mode,
         }
-        phase_icon = phase_icons.get(phase, "📌")
-        
-        # 使用 FormattedText 构建带背景色的单行状态栏
-        header_parts = [
-            ("class:status-bar", " MoFox Code "),
-            ("class:status-bar-dim", "● "),
-            ("class:status-bar", f"{phase_icon} {phase} "),
-            ("class:status-bar", f"{project} "),
-            ("class:status-bar", f"auto-review:{'ON' if auto_review else 'OFF'} "),
-            ("class:status-bar", f"cp:{checkpoint_count}"),
-        ]
-        
-        if yolo_mode:
-            header_parts.append(("class:status-bar", " ⚡YOLO"))
-        
-        if goal_mode:
-            header_parts.append(("class:status-bar", " 🎯GOAL"))
-        
-        header_text = FormattedText(header_parts)
-        self.update_header(header_text)
+        self._invalidate()
 
     # ─── Body ───
 
     def append_body(self, renderable: RenderableType) -> int:
-        """追加一条到 body 区域，返回条目索引。"""
-        self._body_items.append(self._render_to_ansi(renderable))
+        """追加一条到 body 区域，返回条目索引。
+        
+        当超过 MAX_BODY_ITEMS 时从头部裁剪旧条目，
+        并自动修正所有命名槽位和动画索引。
+        """
+        ansi = self._render_to_ansi(renderable)
+        self._body_items.append((renderable, ansi))
         # 裁剪
         if len(self._body_items) > self.MAX_BODY_ITEMS:
+            overflow = len(self._body_items) - self.MAX_BODY_ITEMS
             self._body_items = self._body_items[-self.MAX_BODY_ITEMS:]
+            self._fix_indices_after_trim(overflow)
         self._body_dirty = True
         if self._follow_output:
             self._sync_scroll_to_bottom()
@@ -179,12 +178,19 @@ class TUILayoutManager:
         return len(self._body_items) - 1
 
     def insert_body(self, index: int, renderable: RenderableType) -> int:
-        """在指定位置插入一条 body 条目，返回最终索引。"""
+        """在指定位置插入一条 body 条目，返回最终索引。
+        
+        插入后自动修正所有 >= 目标位置的命名槽位和动画索引 +1；
+        若触发裁剪则再统一减去 overflow。
+        """
         target = max(0, min(index, len(self._body_items)))
-        self._body_items.insert(target, self._render_to_ansi(renderable))
+        ansi = self._render_to_ansi(renderable)
+        self._body_items.insert(target, (renderable, ansi))
+        self._fix_indices_after_insert(target)
         if len(self._body_items) > self.MAX_BODY_ITEMS:
             overflow = len(self._body_items) - self.MAX_BODY_ITEMS
             del self._body_items[:overflow]
+            self._fix_indices_after_trim(overflow)
             target = max(0, target - overflow)
         self._body_dirty = True
         if self._follow_output:
@@ -195,7 +201,8 @@ class TUILayoutManager:
     def update_body_item(self, index: int, renderable: RenderableType) -> None:
         """按索引替换 body 条目。"""
         if 0 <= index < len(self._body_items):
-            self._body_items[index] = self._render_to_ansi(renderable)
+            ansi = self._render_to_ansi(renderable)
+            self._body_items[index] = (renderable, ansi)
             self._body_dirty = True
             if self._follow_output:
                 self._sync_scroll_to_bottom()
@@ -203,22 +210,101 @@ class TUILayoutManager:
 
     def update_body_last(self, renderable: RenderableType) -> None:
         """替换 body 最后一条（流式更新用）。"""
+        ansi = self._render_to_ansi(renderable)
         if self._body_items:
-            self._body_items[-1] = self._render_to_ansi(renderable)
+            self._body_items[-1] = (renderable, ansi)
         else:
-            self._body_items.append(self._render_to_ansi(renderable))
+            self._body_items.append((renderable, ansi))
         self._body_dirty = True
         if self._follow_output:
             self._sync_scroll_to_bottom()
         self._invalidate()
 
     def clear_body(self) -> None:
-        """清空 body 内容。"""
+        """清空 body 内容（包括命名槽位和动画槽位）。"""
         self._body_items.clear()
+        self._animated_body_indices.clear()
+        self._body_anim_factories.clear()
+        self._slots.clear()
         self._body_scroll = 0
         self._follow_output = True
         self._body_dirty = True
         self._invalidate()
+
+    def set_slot(self, name: str, index: int) -> None:
+        """将命名槽位绑定到 body 物理索引（由调用方在 append/insert 后注册）。"""
+        self._slots[name] = index
+
+    def get_slot(self, name: str) -> int | None:
+        """获取命名槽位对应的 body 物理索引，不存在返回 None。"""
+        return self._slots.get(name)
+
+    def del_slot(self, name: str) -> None:
+        """删除命名槽位（不删除 body 条目本身）。"""
+        self._slots.pop(name, None)
+
+    def _fix_indices_after_trim(self, overflow: int) -> None:
+        """当 body 头部被裁剪 overflow 条后，修正所有内部索引。
+
+        所有命名槽位和动画索引统一减去 overflow；若某槽位索引变为负数
+        （即其对应条目已被裁剪掉），则自动删除该槽位。
+        """
+        if overflow <= 0:
+            return
+        # 修正 slots
+        for name in list(self._slots):
+            new_idx = self._slots[name] - overflow
+            if new_idx < 0:
+                del self._slots[name]
+            else:
+                self._slots[name] = new_idx
+        # 修正动画槽位索引
+        new_animated: set[int] = set()
+        for idx in self._animated_body_indices:
+            new_idx = idx - overflow
+            if new_idx >= 0:
+                new_animated.add(new_idx)
+        self._animated_body_indices = new_animated
+        # 修正动画工厂索引
+        new_factories: dict[int, Callable[[], RenderableType]] = {}
+        for idx, factory in self._body_anim_factories.items():
+            new_idx = idx - overflow
+            if new_idx >= 0:
+                new_factories[new_idx] = factory
+        self._body_anim_factories = new_factories
+
+    def _fix_indices_after_insert(self, at: int) -> None:
+        """在 at 位置插入一条后，将所有 >= at 的内部索引 +1。
+
+        调用时机：_body_items.insert(at, ...) 之后、裁剪之前。
+        """
+        for name in self._slots:
+            if self._slots[name] >= at:
+                self._slots[name] += 1
+        new_animated: set[int] = set()
+        for idx in self._animated_body_indices:
+            new_animated.add(idx + 1 if idx >= at else idx)
+        self._animated_body_indices = new_animated
+        new_factories: dict[int, Callable[[], RenderableType]] = {}
+        for idx, factory in self._body_anim_factories.items():
+            new_idx = idx + 1 if idx >= at else idx
+            new_factories[new_idx] = factory
+        self._body_anim_factories = new_factories
+
+    def mark_body_animated(self, index: int, factory: Callable[[], RenderableType]) -> None:
+        """标记 body 条目为动画槽位，每帧用 factory 重新生成 renderable。
+
+        Args:
+            index: body 条目索引。
+            factory: 无参回调，返回当前帧应显示的 RenderableType。
+        """
+        self._animated_body_indices.add(index)
+        self._body_anim_factories[index] = factory
+
+    def unmark_body_animated(self, index: int) -> None:
+        """移除 body 条目的动画标记。"""
+        self._animated_body_indices.discard(index)
+        self._body_anim_factories.pop(index, None)
 
     # ─── Footer ───
 
@@ -232,9 +318,15 @@ class TUILayoutManager:
         self._footer_hint = hint
         self._invalidate()
 
-    def set_footer_hint(self, hint: str) -> None:
-        """设置自定义 footer 提示文本。"""
-        self._footer_hint = hint
+    def set_footer_spinner(self, visible: bool) -> None:
+        """显示或隐藏 body 底部的 Agent 忙碌旋转指示器。
+
+        当 visible=True 时，body 最底部会固定显示一行 braille spinner，
+        直观指示 agent 仍在工作中。幂等：状态未变化时忽略。
+        """
+        if self._footer_spinner_visible == visible:
+            return
+        self._footer_spinner_visible = visible
         self._invalidate()
 
     # ─── 输入 ───
@@ -437,6 +529,7 @@ class TUILayoutManager:
     def _render_to_ansi(self, renderable: RenderableType) -> str:
         """将 Rich renderable 渲染为 ANSI 文本（复用 Console 实例）。"""
         width = self._render_width()
+        self._last_render_width = width
         # 仅在宽度变化时重建 Console，避免长时间运行产生大量临时对象
         if self._render_console is None or width != self._render_console_width:
             self._render_console = Console(
@@ -460,14 +553,41 @@ class TUILayoutManager:
             return max(40, app.output.get_size().columns - 6)
         return max(40, self._console.size.width - 6)
 
+    def _needs_rerender(self) -> bool:
+        """检测终端宽度是否变化，需要重渲染 body 条目。"""
+        if not self._body_items:
+            return False
+        return self._render_width() != self._last_render_width
+
+    def _rerender_all_body_items(self) -> None:
+        """按当前终端宽度重渲染所有 body 条目。"""
+        for i, (renderable, _ansi) in enumerate(self._body_items):
+            new_ansi = self._render_to_ansi(renderable)
+            self._body_items[i] = (renderable, new_ansi)
+        self._body_dirty = True
+
     def _body_lines(self) -> list[str]:
         """获取当前 body 的全部文本行（使用缓存）。"""
         if not self._body_items:
             return ["等待 Agent 响应..."]
 
+        # 终端宽度变化时，按新宽度重渲染所有条目（修复 resize 导致内容被裁剪的 bug）
+        if self._needs_rerender():
+            self._rerender_all_body_items()
+
+        # 动画槽位：每帧用工厂函数重新生成 renderable 并渲染
+        if self._animated_body_indices:
+            for idx in list(self._animated_body_indices):
+                factory = self._body_anim_factories.get(idx)
+                if factory and 0 <= idx < len(self._body_items):
+                    renderable = factory()
+                    new_ansi = self._render_to_ansi(renderable)
+                    self._body_items[idx] = (renderable, new_ansi)
+            self._body_dirty = True
+
         # 仅在 body 内容变化时重建完整文本和行列表，避免每帧 O(n) 开销
         if self._body_dirty:
-            self._body_text_cache = "\n".join(self._body_items)
+            self._body_text_cache = "\n".join(item[1] for item in self._body_items)
             self._body_lines_cache = self._body_text_cache.splitlines() or [""]
             self._body_dirty = False
 
@@ -509,12 +629,70 @@ class TUILayoutManager:
             self._follow_output = True
         self._invalidate()
 
+    def set_anim_frame(self, frame: int) -> None:
+        """设置当前动画帧编号，供 _get_header_text 等动态方法使用。"""
+        self._anim_frame = frame
+
     def _get_header_text(self):
-        # 如果已经是 FormattedText，直接返回
+        """动态生成 header 状态栏（含 spinner 动画）。"""
+        data = self._header_data
+        if data:
+            return self._build_header_formatted(data, self._anim_frame)
+        # 回退：如果 _header_content 已被外部设置（如 update_header）
         if isinstance(self._header_content, FormattedText):
             return self._header_content
-        # 否则转换为 ANSI
         return ANSI(self._render_to_ansi(self._header_content))
+
+    @staticmethod
+    def _build_header_formatted(data: dict, anim_frame: int = 0) -> FormattedText:
+        """从 header 数据构建 FormattedText（静态方法，方便测试）。
+
+        当 phase 为 thinking/coding/researching 时，在相位图标旁显示旋转 braille spinner。
+        """
+        from .animation import AnimationManager
+
+        phase = data.get("phase", "")
+        project = data.get("project", "")
+        auto_review = data.get("auto_review", False)
+        checkpoint_count = data.get("checkpoint_count", 0)
+        yolo_mode = data.get("yolo_mode", False)
+        goal_mode = data.get("goal_mode", False)
+
+        phase_icons: dict[str, str] = {
+            "connecting": "🔌",
+            "researching": "🔍",
+            "ready": "✅",
+            "thinking": "🧠",
+            "coding": "⚡",
+            "reviewing": "🔍",
+            "error": "❌",
+        }
+        phase_icon = phase_icons.get(phase, "📌")
+
+        # 活跃相位（thinking/coding/researching）显示 spinner
+        spinner_phases = {"thinking", "coding", "researching"}
+        if phase in spinner_phases:
+            spinner_char = AnimationManager.spinner_char(anim_frame)
+            phase_display = f"{phase_icon}{spinner_char} {phase}"
+        else:
+            phase_display = f"{phase_icon} {phase}"
+
+        parts: list[tuple[str, str]] = [
+            ("class:status-bar", " MoFox Code "),
+            ("class:status-bar-dim", "● "),
+            ("class:status-bar", f"{phase_display} "),
+            ("class:status-bar", f"{project} "),
+            ("class:status-bar", f"auto-review:{'ON' if auto_review else 'OFF'} "),
+            ("class:status-bar", f"cp:{checkpoint_count}"),
+        ]
+
+        if yolo_mode:
+            parts.append(("class:status-bar", " ⚡YOLO"))
+
+        if goal_mode:
+            parts.append(("class:status-bar", " 🎯GOAL"))
+
+        return FormattedText(parts)
 
     def _get_separator_text(self):
         """动态生成分隔线，宽度自适应终端。"""
@@ -530,7 +708,11 @@ class TUILayoutManager:
         # _body_lines 内部已使用缓存，只在 dirty 时重建
         lines = self._body_lines()
         visible_height = self._visible_body_height()
-        max_scroll = max(0, len(lines) - visible_height)
+
+        # 如果 footer spinner 可见，为它预留一行
+        spinner_reserved = 1 if self._footer_spinner_visible else 0
+        effective_height = max(1, visible_height - spinner_reserved)
+        max_scroll = max(0, len(lines) - effective_height)
 
         if self._follow_output:
             start = max_scroll
@@ -539,6 +721,12 @@ class TUILayoutManager:
             self._body_scroll = max(0, min(self._body_scroll, max_scroll))
             start = self._body_scroll
 
-        end = start + visible_height
+        end = start + effective_height
         visible_lines = lines[start:end]
+
+        if self._footer_spinner_visible:
+            from .animation import AnimationManager
+            spinner = AnimationManager.spinner_char(self._anim_frame)
+            visible_lines.append(f"  {spinner} Agent 工作中...")
+
         return ANSI("\n".join(visible_lines))
