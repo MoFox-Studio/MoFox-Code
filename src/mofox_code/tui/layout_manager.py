@@ -108,8 +108,8 @@ class TUILayoutManager:
         self._invalidate_scheduled: bool = False
 
         # ── 上下文用量显示 ──
-        self._context_usage_text: str = ""
-        self._context_usage_style: str = ""
+        # 按 source 分别存储，如 {"agent": (text, style), "coder": (text, style)}
+        self._context_usage: dict[str, tuple[str, str]] = {}
 
     @property
     def console(self) -> Console:
@@ -367,8 +367,8 @@ class TUILayoutManager:
             return f"{val:.1f}k"
         return str(n)
 
-    def set_context_usage(self, total_tokens: int, max_context: int) -> None:
-        """设置上下文用量显示文本。
+    def set_context_usage(self, total_tokens: int, max_context: int, source: str = "agent") -> None:
+        """设置上下文用量显示文本（按 source 分别存储）。
 
         根据 total_tokens 占 max_context 的比例选择颜色：
         - < 70%: dim 灰色
@@ -388,12 +388,10 @@ class TUILayoutManager:
                 style = self._theme.warning
             else:
                 style = self._theme.error
-            self._context_usage_text = f"({used_str}/{max_str})"
-            self._context_usage_style = style
+            self._context_usage[source] = (f"({used_str}/{max_str})", style)
         else:
             # max_context 未知时仅显示用量
-            self._context_usage_text = f"({used_str} tokens)"
-            self._context_usage_style = self._theme.dim
+            self._context_usage[source] = (f"({used_str} tokens)", self._theme.dim)
 
         self._invalidate()
 
@@ -808,8 +806,12 @@ class TUILayoutManager:
             spinner_text.append(f"  {spinner} ", style=self._theme.dim)
             spinner_text.append(f"{label}", style=f"bold {color}")
             spinner_text.append(" 工作中...", style=self._theme.dim)
-            if self._context_usage_text:
-                spinner_text.append(f" {self._context_usage_text}", style=self._context_usage_style)
+            # 按当前 source 取对应的上下文用量
+            source_key = self._footer_spinner_source.strip().lower()
+            usage_entry = self._context_usage.get(source_key)
+            if usage_entry:
+                usage_text, usage_style = usage_entry
+                spinner_text.append(f" {usage_text}", style=usage_style)
             visible_lines.append(self._render_to_ansi(spinner_text))
 
         return ANSI("\n".join(visible_lines))

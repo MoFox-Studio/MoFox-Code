@@ -32,6 +32,9 @@ class Theme:
     # 代码高亮主题名（Rich Syntax 用）
     code_theme: str
 
+    # Thinking 呼吸动画风格
+    thinking_style: str = "classic"  # "classic" | "moe" | "star"
+
 
 DARK_THEME = Theme(
     name="dark",
@@ -41,6 +44,7 @@ DARK_THEME = Theme(
     status_bar_bg="#313244", status_bar_fg="#cdd6f4",
     panel_border="#45475a", diff_add="#a6e3a1", diff_remove="#f38ba8",
     code_theme="monokai",
+    thinking_style="classic",
 )
 
 LIGHT_THEME = Theme(
@@ -51,6 +55,7 @@ LIGHT_THEME = Theme(
     status_bar_bg="#ccd0da", status_bar_fg="#4c4f69",
     panel_border="#bcc0cc", diff_add="#40a02b", diff_remove="#d20f39",
     code_theme="github-dark",
+    thinking_style="classic",
 )
 
 MONOKAI_THEME = Theme(
@@ -61,6 +66,7 @@ MONOKAI_THEME = Theme(
     status_bar_bg="#3e3d32", status_bar_fg="#f8f8f2",
     panel_border="#49483e", diff_add="#a6e22e", diff_remove="#f92672",
     code_theme="monokai",
+    thinking_style="classic",
 )
 
 

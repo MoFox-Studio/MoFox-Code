@@ -8,7 +8,9 @@ from typing import Callable
 
 from rich.console import Console, RenderableType
 from rich.markdown import Markdown
+from rich.text import Text
 from .themes import Theme
+from .animation import AnimationManager
 
 
 class StreamMarkdownRenderer:
@@ -43,6 +45,7 @@ class StreamMarkdownRenderer:
         self._last_emitted_content: str = ""
         self._stream_start_time: float = 0.0
         self._flush_scheduled: bool = False
+        self._streaming_active: bool = False
 
     def set_output(self, output: Callable[[RenderableType], None]) -> None:
         """设置 output 回调。"""
@@ -94,6 +97,8 @@ class StreamMarkdownRenderer:
         """接收一个流式 chunk。"""
         if not chunk:
             return
+        
+        self._streaming_active = True
 
         # 累积内容
         if chunk.startswith(self._content):
@@ -118,9 +123,44 @@ class StreamMarkdownRenderer:
 
     def finalize(self) -> None:
         """流结束，强制渲染所有剩余缓冲并重置节流。"""
+        self._streaming_active = False
         if self._content and self._content != self._last_emitted_content:
             self._emit_markdown()
         self._dirty = False
         # 重置节流参数，下一轮流式从初始间隔开始
         self._throttle_interval = self._INIT_INTERVAL
         self._stream_start_time = 0.0
+
+    @property
+    def streaming_active(self) -> bool:
+        """是否正在流式输出中。"""
+        return self._streaming_active
+
+    @staticmethod
+    def cursor_char(frame: int) -> str:
+        """流式文本尾部光标脉冲字符（委托给 AnimationManager）。"""
+        return AnimationManager.cursor_char(frame)
+
+    def build_with_cursor(self, frame: int) -> RenderableType:
+        """构建带脉冲光标的当前内容。
+
+        光标字符仅通过此方法添加到渲染输出，不写入 _content，
+        确保不污染 message buffer。
+
+        注意：不能用 Group(md, cursor) — Group 会将子 renderable
+        垂直堆叠渲染，导致光标出现在内容底部新行而非文末。
+        这里直接用 Text 拼接原始内容 + 光标字符，
+        牺牲流式期间的 Markdown 高亮以换取正确的光标位置。
+
+        Args:
+            frame: 当前动画帧编号。
+
+        Returns:
+            带光标字符的 Rich Text renderable。
+        """
+        cursor = self.cursor_char(frame)
+        if not self._content:
+            return Text(cursor, style=self._theme.accent)
+        result = Text(self._content, style=self._theme.agent_text)
+        result.append(cursor, style=self._theme.accent)
+        return result

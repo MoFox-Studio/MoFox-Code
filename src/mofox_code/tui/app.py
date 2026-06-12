@@ -538,13 +538,15 @@ class TUIApp:
             if self._layout.get_slot("thinking") is None:
                 self._active_stream_source = source
                 
-                # 工厂函数：每帧用最新 anim_dots 重新生成 thinking 占位面板
+                # 工厂函数：每帧用最新 breathing_dots 重新生成 thinking 占位面板
                 def _make_thinking_placeholder() -> RenderableType:
-                    dots = AnimationManager.dots(self._anim.frame, 3)
+                    dots_str = AnimationManager.breathing_dots(
+                        self._anim.frame, self._theme.thinking_style
+                    )
                     return self._renderer.build_thinking(
                         "正在思考...",
                         title=self._thinking_title(source),
-                        anim_dots=len(dots),
+                        anim_dots=dots_str,
                     )
                 
                 placeholder = _make_thinking_placeholder()
@@ -562,8 +564,9 @@ class TUIApp:
         """处理 agent.context_usage 消息，更新 footer spinner 旁的上下文用量显示。"""
         total_tokens = payload.get("total_tokens", 0)
         max_context = payload.get("max_context", 0)
+        source = payload.get("source", "agent")
         if total_tokens:
-            self._layout.set_context_usage(total_tokens, max_context)
+            self._layout.set_context_usage(total_tokens, max_context, source=source)
 
     async def _on_agent_text(self, payload: dict) -> None:
         content = payload.get("content", "")
@@ -585,14 +588,41 @@ class TUIApp:
                     output=lambda renderable: self._update_agent_stream(renderable, source),
                 )
             self._stream_renderer.feed(content)
+            
+            # 流式光标动画：标记 agent slot 为 animated，
+            # 工厂每帧用 build_with_cursor 生成带脉冲光标的 Panel
+            agent_idx = self._layout.get_slot("agent")
+            if agent_idx is not None and self._stream_renderer.streaming_active:
+                stream_ref = self._stream_renderer  # 闭包捕获引用
+                label = self._renderer._format_source_label(source)
+                border_color = {
+                    "Agent": self._theme.success,
+                    "Coder": self._theme.warning,
+                }.get(label, self._theme.accent)
+                
+                def _make_stream_with_cursor() -> RenderableType:
+                    inner = stream_ref.build_with_cursor(self._anim.frame)
+                    return Panel(
+                        inner,
+                        title=f"  🤖 {label}",
+                        border_style=border_color,
+                        title_align="left",
+                        expand=True,
+                    )
+                
+                self._layout.mark_body_animated(agent_idx, _make_stream_with_cursor)
         else:
             # 流结束
+            _final_content = ""
+            _final_source = source
             if self._stream_renderer:
                 if content:
                     self._stream_renderer.feed(content)
                 self._stream_renderer.finalize()
+                _final_content = self._stream_renderer._content
                 self._stream_renderer = None
             elif content and content.strip():
+                _final_content = content
                 self._update_agent_stream(
                     Markdown(content, style=self._theme.agent_text)
                 )
@@ -604,6 +634,14 @@ class TUIApp:
                         Text("  （模型未返回文本输出）", style=self._theme.dim)
                     )
 
+            # 清理动画标记，并用最终干净内容替换 body item
+            # （防止 animated factory 最后一帧的 cursored 内容残留）
+            agent_idx = self._layout.get_slot("agent")
+            if agent_idx is not None:
+                self._layout.unmark_body_animated(agent_idx)
+                if _final_content.strip():
+                    clean_md = Markdown(_final_content, style=self._theme.agent_text)
+                    self._update_agent_stream(clean_md, _final_source)
             self._collapse_active_thinking_if_needed()
             self._layout.del_slot("agent")
             self._layout.del_slot("thinking")
@@ -660,8 +698,24 @@ class TUIApp:
         args_summary = payload.get("args_summary", "")
         source = payload.get("source", "agent")
         stage = payload.get("stage", "running")
-        self._renderer.render_tool_call(name, args_summary, source=source, stage=stage)
-        self._layout.append_body(Text(""))
+        normalized_stage = (stage or "running").strip().lower()
+        
+        if normalized_stage == "running":
+            # 运行动画：工厂每帧生成带 braille spinner 的工具调用行
+            def _make_tool_call() -> RenderableType:
+                return self._renderer.build_tool_call_animated(
+                    name, args_summary, source=source, stage=stage,
+                    frame=self._anim.frame,
+                )
+            
+            tool_renderable = _make_tool_call()
+            idx = self._layout.append_body(tool_renderable)
+            self._layout.set_slot("tool_call", idx)
+            self._layout.mark_body_animated(idx, _make_tool_call)
+            self._layout.append_body(Text(""))
+        else:
+            self._renderer.render_tool_call(name, args_summary, source=source, stage=stage)
+            self._layout.append_body(Text(""))
 
     async def _on_approval_request(self, payload: dict) -> None:
         was_empty = not self._approval_queue and not self._handling_approval
@@ -681,15 +735,77 @@ class TUIApp:
         content = payload.get("content", "")
         is_stderr = payload.get("stream") == "stderr"
         exit_code = payload.get("exit_code")
+        
+        # 渲染 bash 输出内容
         self._renderer.render_bash_output(content, is_stderr, exit_code)
+        
+        # 检查是否需要折叠指示器
+        total_lines, is_folded = self._renderer.get_bash_fold_info(
+            content, is_stderr, exit_code
+        )
+        
+        if is_folded and total_lines > 0:
+            # 折叠箭头动画：工厂每帧生成带动画箭头的折叠行
+            # 播放约 3 帧（240ms）后取消动画，停留在最终帧
+            _anim_start_frame = self._anim.frame
+            
+            def _make_fold_line() -> RenderableType:
+                rel_frame = self._anim.frame - _anim_start_frame
+                # 前 3 帧播放动画，之后停留在最终帧
+                if rel_frame < 3:
+                    effective_frame = rel_frame
+                else:
+                    effective_frame = 2  # 最终帧
+                return self._renderer.build_bash_fold_line(
+                    total_lines, expanded=False, frame=effective_frame
+                )
+            
+            initial = _make_fold_line()
+            idx = self._layout.append_body(initial)
+            # 短暂播放动画，~240ms 后取消
+            def _stop_fold_anim() -> None:
+                if idx in self._layout._animated_body_indices:
+                    self._layout.unmark_body_animated(idx)
+                    final_line = self._renderer.build_bash_fold_line(
+                        total_lines, expanded=False, frame=2
+                    )
+                    self._layout.update_body_item(idx, final_line)
+            
+            self._layout.mark_body_animated(idx, _make_fold_line)
+            loop = asyncio.get_running_loop()
+            loop.call_later(0.24, _stop_fold_anim)
+        
         self._layout.append_body(Text(""))
 
     async def _on_file_change(self, payload: dict) -> None:
-        self._renderer.render_file_change(
-            payload.get("path", ""),
-            payload.get("action", ""),
-            payload.get("diff", ""),
-        )
+        path = payload.get("path", "")
+        action = payload.get("action", "")
+        diff = payload.get("diff", "")
+        
+        # 工厂函数：每帧用 checkmark_pop 替换图标
+        def _make_file_change_anim() -> RenderableType:
+            return self._renderer.build_file_change_animated(
+                path, action, frame=self._anim.frame, style="mofox"
+            )
+        
+        # 追加到 body 并标记为动画
+        initial = _make_file_change_anim()
+        idx = self._layout.append_body(initial)
+        self._layout.mark_body_animated(idx, _make_file_change_anim)
+        
+        # 500ms 后取消动画，恢复静态图标
+        def _stop_anim() -> None:
+            static = self._renderer.build_file_change_animated(
+                path, action, frame=0, style="mofox"
+            )
+            self._layout.unmark_body_animated(idx)
+            self._layout.update_body_item(idx, static)
+        
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.5, _stop_anim)
+        
+        if diff:
+            self._renderer.render_code_diff(path, diff)
         self._layout.append_body(Text(""))
 
     async def _on_plan_present(self, payload: dict) -> None:
@@ -905,25 +1021,35 @@ class TUIApp:
         self._layout._invalidate()
 
     def _close_active_response_segment(self) -> None:
-        """结束当前一轮 agent/thinking 的流式更新槽位。
+        """结束当前一轮 agent/thinking/tool_call 的流式更新槽位。
 
         连续工具调用会把多轮 LLM 输出串在一个 session 里。
         收到 tool.call 时没有 final 事件，因此需要在前端手动收口当前槽位，
         让工具后的下一轮回复追加为新消息，而不是覆盖上一轮内容。
         """
+        # 捕获最终内容用于清理（防止 animated factory 残留 cursor）
+        _final_content = ""
         if self._stream_renderer:
+            _final_content = self._stream_renderer._content
             self._stream_renderer.finalize()
         self._collapse_active_thinking_if_needed()
         # 清理动画标记
         agent_idx = self._layout.get_slot("agent")
         thinking_idx = self._layout.get_slot("thinking")
+        tool_call_idx = self._layout.get_slot("tool_call")
         if agent_idx is not None:
             self._layout.unmark_body_animated(agent_idx)
+            if _final_content.strip():
+                clean_md = Markdown(_final_content, style=self._theme.agent_text)
+                self._update_agent_stream(clean_md, self._active_stream_source)
         if thinking_idx is not None:
             self._layout.unmark_body_animated(thinking_idx)
+        if tool_call_idx is not None:
+            self._layout.unmark_body_animated(tool_call_idx)
         self._stream_renderer = None
         self._layout.del_slot("agent")
         self._layout.del_slot("thinking")
+        self._layout.del_slot("tool_call")
         self._active_stream_source = "agent"
 
     def _collapse_active_thinking_if_needed(self) -> None:

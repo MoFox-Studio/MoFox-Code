@@ -12,6 +12,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from .themes import Theme
+from .animation import AnimationManager
 
 
 class TUIRenderer:
@@ -114,19 +115,18 @@ class TUIRenderer:
         """渲染思考过程。"""
         self._print(self.build_thinking(content))
 
-    def build_thinking(self, content: str, title: str = "🧠 Thinking", anim_dots: int = 0) -> Panel:
+    def build_thinking(self, content: str, title: str = "🧠 Thinking", anim_dots: str = "") -> Panel:
         """构建思考过程面板。
 
         Args:
             content: 思考文本内容。
             title: 面板标题。
-            anim_dots: 动画点数（0=不显示，1-3=循环点动画）。
+            anim_dots: 动画点字符串（空字符串=不显示动画，否则为预计算的呼吸点字符串）。
         """
         display_content = content
-        if anim_dots > 0 and (not content or content.strip() == "正在思考..."):
-            # 占位文本加动画点
-            dots_str = "." * anim_dots
-            display_content = f"正在思考{dots_str}"
+        if anim_dots and (not content or content.strip() == "正在思考..."):
+            # 占位文本加动画点（由调用方通过 AnimationManager.breathing_dots 预生成）
+            display_content = f"正在思考{anim_dots}"
         display_text = Text(display_content, style=self._theme.thinking)
         return Panel(
             display_text,
@@ -149,17 +149,49 @@ class TUIRenderer:
         args_summary: str,
         source: str = "agent",
         stage: str = "running",
-    ) -> None:
-        """渲染工具调用提示。"""
+    ) -> RenderableType:
+        """渲染工具调用提示，返回 renderable 供外部动画管理。"""
+        tool_text = self.build_tool_call_animated(
+            name, args_summary, source, stage, frame=0
+        )
+        self._print(tool_text)
+        return tool_text
+
+    def build_tool_call_animated(
+        self,
+        name: str,
+        args_summary: str,
+        source: str = "agent",
+        stage: str = "running",
+        frame: int = 0,
+    ) -> RenderableType:
+        """构建工具调用行 renderable。
+
+        Args:
+            name: 工具名称。
+            args_summary: 参数摘要。
+            source: 来源标识。
+            stage: 阶段（"running" 时显示动画 spinner）。
+            frame: 动画帧编号（用于 spinner/进度条）。
+
+        Returns:
+            工具调用行的 Rich Text renderable。
+        """
+        normalized_stage = (stage or "running").strip().lower()
         tool_text = Text()
-        tool_text.append("  ⚙ ", style=self._theme.accent)
+        
+        if normalized_stage == "running":
+            spinner = AnimationManager.spinner_char(frame)
+            tool_text.append(f"  {spinner} ", style=self._theme.accent)
+        else:
+            tool_text.append("  ⚙ ", style=self._theme.accent)
+        
         tool_text.append(f"{name}", style=f"bold {self._theme.accent}")
         if args_summary:
             tool_text.append(f" {args_summary}", style=self._theme.dim)
-        normalized_stage = (stage or "running").strip().lower()
         if normalized_stage == "planning":
             tool_text.append("  ...", style=self._theme.warning)
-        self._print(tool_text)
+        return tool_text
 
     def render_agent_status(self, detail: str, source: str = "agent") -> None:
         """渲染 agent 状态信息。"""
@@ -327,21 +359,80 @@ class TUIRenderer:
         if exit_code == 0 and len(lines) > 5:
             # 成功输出，折叠
             collapsed = "\n".join(lines[:3])
-            output = collapsed + f"\n... (共 {len(lines)} 行，已折叠)"
+            self._print(Text(collapsed, style=self._theme.fg))
         elif exit_code is None and len(lines) > 20:
             # 无 exit_code，保守截断
-            output = "\n".join(lines[:10]) + f"\n... (共 {len(lines)} 行)"
+            self._print(Text("\n".join(lines[:10]), style=self._theme.fg))
         elif exit_code is not None and exit_code != 0:
             # 失败输出，完整展开（上限 80 行）
             if len(lines) > 80:
                 output = "\n".join(lines[:80])
                 output += f"\n... (输出已截断，共 {len(lines)} 行)"
-        # 其他情况（exit_code=0 且 <=5行，或 exit_code=None 且 <=20行）保持原样
-        
-        self._print(Text(output, style=self._theme.fg))
+            self._print(Text(output, style=self._theme.fg))
+        else:
+            # 其他情况（exit_code=0 且 <=5行，或 exit_code=None 且 <=20行）保持原样
+            self._print(Text(output, style=self._theme.fg))
+
+    def build_bash_fold_line(
+        self, total_lines: int, expanded: bool = False, frame: int = 0
+    ) -> RenderableType:
+        """构建 bash 输出折叠/展开行，支持箭头动画。
+
+        Args:
+            total_lines: 输出总行数。
+            expanded: 当前是否展开（True=▾, False=▸）。
+            frame: 动画帧编号（用于折叠箭头动画）。
+
+        Returns:
+            折叠/展开行的 Rich Text renderable。
+        """
+        arrow = AnimationManager.fold_arrow(frame, expanded)
+        state_label = "bash output"
+        text = Text()
+        text.append(f"  {arrow} ", style=self._theme.dim)
+        text.append(f"{state_label}", style=self._theme.dim)
+        text.append(f"  ({total_lines} lines)", style=self._theme.dim)
+        return text
+
+    def get_bash_fold_info(
+        self, output: str, is_stderr: bool, exit_code: int | None
+    ) -> tuple[int, bool]:
+        """判断 bash 输出是否需要折叠。
+
+        Returns:
+            (total_lines, is_folded): 总行数和是否需要折叠指示器。
+        """
+        if is_stderr:
+            return (0, False)
+        lines = output.splitlines()
+        if exit_code == 0 and len(lines) > 5:
+            return (len(lines), True)
+        if exit_code is None and len(lines) > 20:
+            return (len(lines), True)
+        return (0, False)
 
     def render_file_change(self, path: str, action: str, diff: str = "") -> None:
         """显示文件变更通知。"""
+        change_text = self.build_file_change_animated(path, action, frame=0)
+        self._print(change_text)
+
+        if diff:
+            self.render_code_diff(path, diff)
+
+    def build_file_change_animated(
+        self, path: str, action: str, frame: int = 0, style: str = "mofox"
+    ) -> RenderableType:
+        """构建文件变更行 renderable，支持 checkmark 弹出动画。
+
+        Args:
+            path: 文件路径。
+            action: 变更操作（create/modify/delete）。
+            frame: 动画帧编号。
+            style: checkmark 风格，"classic" 或 "mofox"（默认 mofox ◆◇◆）。
+
+        Returns:
+            文件变更行的 Rich Text renderable。
+        """
         icons = {"create": "+", "modify": "~", "delete": "-"}
         icon = icons.get(action, "*")
         action_colors = {
@@ -351,14 +442,14 @@ class TUIRenderer:
         }
         color = action_colors.get(action, self._theme.dim)
 
+        # 动画帧：用 checkmark_pop 字符替换静态图标
+        anim_icon = AnimationManager.checkmark_pop(frame, style)
+
         change_text = Text()
-        change_text.append(f"  [{icon}] ", style=color)
+        change_text.append(f"  [{anim_icon}] ", style=color)
         change_text.append(f"{action}: ", style=self._theme.dim)
         change_text.append(path, style=color)
-        self._print(change_text)
-
-        if diff:
-            self.render_code_diff(path, diff)
+        return change_text
 
     def render_checkpoint_created(
         self, step: int, tool: str, description: str, reversible: bool

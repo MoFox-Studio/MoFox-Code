@@ -118,25 +118,42 @@ class TUILayoutManagerTest(unittest.TestCase):
 
     # ── set_context_usage 测试 ──
 
+    def _get_usage(self, source: str = "agent") -> tuple[str, str]:
+        """从 _context_usage dict 获取指定 source 的用量。"""
+        return self.layout._context_usage.get(source, ("", ""))
+
     def test_context_usage_low_ratio_dim_color(self) -> None:
         self.layout.set_context_usage(64000, 128000)
-        self.assertIn("(64k/128k)", self.layout._context_usage_text)
-        self.assertEqual(self.layout._context_usage_style, DARK_THEME.dim)
+        text, style = self._get_usage()
+        self.assertIn("(64k/128k)", text)
+        self.assertEqual(style, DARK_THEME.dim)
 
     def test_context_usage_medium_ratio_warning_color(self) -> None:
         self.layout.set_context_usage(96000, 128000)  # 75%
-        self.assertIn("(96k/128k)", self.layout._context_usage_text)
-        self.assertEqual(self.layout._context_usage_style, DARK_THEME.warning)
+        text, style = self._get_usage()
+        self.assertIn("(96k/128k)", text)
+        self.assertEqual(style, DARK_THEME.warning)
 
     def test_context_usage_high_ratio_error_color(self) -> None:
         self.layout.set_context_usage(120000, 128000)  # 93.75%
-        self.assertIn("(120k/128k)", self.layout._context_usage_text)
-        self.assertEqual(self.layout._context_usage_style, DARK_THEME.error)
+        text, style = self._get_usage()
+        self.assertIn("(120k/128k)", text)
+        self.assertEqual(style, DARK_THEME.error)
 
     def test_context_usage_unknown_max_shows_only_tokens(self) -> None:
         self.layout.set_context_usage(85000, 0)
-        self.assertEqual(self.layout._context_usage_text, "(85k tokens)")
-        self.assertEqual(self.layout._context_usage_style, DARK_THEME.dim)
+        text, style = self._get_usage()
+        self.assertEqual(text, "(85k tokens)")
+        self.assertEqual(style, DARK_THEME.dim)
+
+    def test_context_usage_per_source_isolation(self) -> None:
+        """验证 agent 和 coder 的用量互不覆盖。"""
+        self.layout.set_context_usage(85000, 128000, source="agent")
+        self.layout.set_context_usage(45000, 64000, source="coder")
+        agent_text, _ = self._get_usage("agent")
+        coder_text, _ = self._get_usage("coder")
+        self.assertIn("85k/128k", agent_text)
+        self.assertIn("45k/64k", coder_text)
 
     def test_context_usage_spinner_renders_with_usage(self) -> None:
         """验证 spinner 活跃时渲染中包含用量文本。"""
@@ -633,7 +650,7 @@ class Phase1BehaviorTest(unittest.IsolatedAsyncioTestCase):
     # ── Bash 输出折叠测试 ──
 
     def test_bash_output_collapsed_on_exit_zero(self) -> None:
-        """exit_code=0 且 >5行时折叠。"""
+        """exit_code=0 且 >5行时折叠（仅输出前3行，不含折叠标记）。"""
         console = Console(record=True, width=80)
         outputs: list[str] = []
         
@@ -648,10 +665,21 @@ class Phase1BehaviorTest(unittest.IsolatedAsyncioTestCase):
         output = "\n".join([f"line {i}" for i in range(10)])
         renderer.render_bash_output(output, is_stderr=False, exit_code=0)
         
-        # 应该折叠
+        # 应仅输出前3行，不含折叠标记（折叠标记由 get_bash_fold_info + build_bash_fold_line 单独管理）
         result = outputs[-1]
-        self.assertIn("共 10 行", result)
+        self.assertIn("line 0", result)
+        self.assertIn("line 2", result)
         self.assertNotIn("line 9", result)
+        
+        # 验证 get_bash_fold_info 正确报告折叠信息
+        total, is_folded = renderer.get_bash_fold_info(output, is_stderr=False, exit_code=0)
+        self.assertEqual(total, 10)
+        self.assertTrue(is_folded)
+
+        # 验证 build_bash_fold_line 构建折叠行（含箭头和行数）
+        fold_line = renderer.build_bash_fold_line(10, expanded=False, frame=2)
+        fold_str = str(fold_line)
+        self.assertIn("10 lines", fold_str)
 
     def test_bash_output_expanded_on_exit_nonzero(self) -> None:
         """exit_code!=0 时完整展开。"""
@@ -675,7 +703,7 @@ class Phase1BehaviorTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("已折叠", result)
 
     def test_bash_output_conservative_when_exit_code_none(self) -> None:
-        """exit_code=None 时保守截断。"""
+        """exit_code=None 时保守截断（仅输出前10行，不含折叠标记）。"""
         console = Console(record=True, width=80)
         outputs: list[str] = []
         
@@ -690,10 +718,16 @@ class Phase1BehaviorTest(unittest.IsolatedAsyncioTestCase):
         output = "\n".join([f"line {i}" for i in range(25)])
         renderer.render_bash_output(output, is_stderr=False, exit_code=None)
         
-        # 应该保守截断
+        # 应仅输出前10行，不含折叠标记
         result = outputs[-1]
-        self.assertIn("共 25 行", result)
+        self.assertIn("line 0", result)
+        self.assertIn("line 9", result)
         self.assertNotIn("line 24", result)
+        
+        # 验证 get_bash_fold_info 正确报告折叠信息
+        total, is_folded = renderer.get_bash_fold_info(output, is_stderr=False, exit_code=None)
+        self.assertEqual(total, 25)
+        self.assertTrue(is_folded)
 
     # ── 流式渲染测试 ──
 

@@ -112,3 +112,119 @@ class AnimationManager:
             return 0
         # 每 2 帧移动 1 格，减慢流光速度
         return (frame // 2) % max(bar_width, 1)
+
+    # ─── 呼吸点动画 ───
+
+    # 卖萌版字符序列：全角居中小点，视觉更柔和
+    _MOE_DOTS = ["·", "⋅", "∙"]
+    # 清爽星版字符序列
+    _STAR_DOTS = ["✦", "✧"]
+
+    @staticmethod
+    def breathing_dots(frame: int, style: str = "classic") -> str:
+        """呼吸点动画：根据风格返回当前帧的点字符串。
+
+        classic: '.' → '..' → '...' → '' 循环（与 dots() 兼容）
+        moe:     '·' → '⋅' → '∙' → '⋅' → '' 循环（柔和卖萌版）
+        star:    '✦' → '✧' → '✦' → '✧' 交替（清爽版）
+
+        Args:
+            frame: 当前帧编号。
+            style: 动画风格，可选 "classic" | "moe" | "star"。
+
+        Returns:
+            点字符串。
+        """
+        if style == "moe":
+            # 每 2 帧切换一次
+            phase = (frame // 2) % (len(AnimationManager._MOE_DOTS) + 1)
+            if phase == 0:
+                return ""
+            return AnimationManager._MOE_DOTS[phase - 1]
+        if style == "star":
+            # 每 3 帧切换一次
+            phase = (frame // 3) % (len(AnimationManager._STAR_DOTS) + 1)
+            if phase == 0:
+                return ""
+            return AnimationManager._STAR_DOTS[phase - 1]
+        # classic: 与 dots() 一致，每 2 帧切换一次
+        return AnimationManager.dots(frame, 3)
+
+    # ─── Pipeline 进度条 ───
+
+    PIPELINE_FRAMES = ["[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]"]
+
+    @staticmethod
+    def pipeline_bar(frame: int) -> str:
+        """Pipeline 进度条动画帧。
+
+        Args:
+            frame: 当前帧编号。
+
+        Returns:
+            当前帧的进度条字符串。
+        """
+        return AnimationManager.PIPELINE_FRAMES[frame % len(AnimationManager.PIPELINE_FRAMES)]
+
+    # ─── 流式光标脉冲 ───
+
+    CURSOR_FRAMES = ["▌", "▋", "▊", "█", "▊", "▋"]
+
+    @staticmethod
+    def cursor_char(frame: int) -> str:
+        """流式文本尾部光标脉冲字符。
+
+        Args:
+            frame: 当前帧编号。
+
+        Returns:
+            当前帧的光标字符。
+        """
+        return AnimationManager.CURSOR_FRAMES[frame % len(AnimationManager.CURSOR_FRAMES)]
+
+    # ─── Checkmark 弹出帧 ───
+
+    CHECKMARK_FRAMES = ["✓", "✔", "✓"]
+    MOFOX_CHECKMARK_FRAMES = ["◆", "◇", "◆"]
+
+    @staticmethod
+    def checkmark_pop(frame: int, style: str = "classic") -> str:
+        """文件修改成功动画帧。
+
+        Args:
+            frame: 当前帧编号。
+            style: "classic" 或 "mofox"。
+
+        Returns:
+            当前帧的 checkmark 字符。
+        """
+        frames = (
+            AnimationManager.MOFOX_CHECKMARK_FRAMES
+            if style == "mofox"
+            else AnimationManager.CHECKMARK_FRAMES
+        )
+        return frames[frame % len(frames)]
+
+    # ─── 折叠箭头动画 ───
+
+    FOLD_EXPANDED = ["▾", "▹", "▾"]
+    FOLD_COLLAPSED = ["▸", "▹", "▸"]
+
+    @staticmethod
+    def fold_arrow(frame: int, expanded: bool) -> str:
+        """折叠/展开箭头动画。
+
+        Args:
+            frame: 当前帧编号。
+            expanded: True 表示当前为展开状态，动画过渡到折叠；
+                      False 表示当前为折叠状态，动画过渡到展开。
+
+        Returns:
+            当前帧的箭头字符。
+        """
+        frames = (
+            AnimationManager.FOLD_EXPANDED
+            if expanded
+            else AnimationManager.FOLD_COLLAPSED
+        )
+        return frames[frame % len(frames)]
