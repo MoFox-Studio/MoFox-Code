@@ -73,6 +73,7 @@ class TUILayoutManager:
         self._follow_output = True
         self._footer_spinner_visible: bool = False
         self._footer_spinner_source: str = "agent"
+        self._context_compressing: bool = False
         self._footer_hint = "Enter 发送 | Ctrl+J 换行 | Ctrl+C 中断 | /help"
         self._header_content: RenderableType = Text("")
         self._header_control = FormattedTextControl(self._get_header_text)
@@ -347,6 +348,11 @@ class TUILayoutManager:
             return
         self._footer_spinner_visible = visible
         self._footer_spinner_source = source
+        self._invalidate()
+
+    def set_context_compressing(self, compressing: bool) -> None:
+        """设置上下文压缩状态标记，触发重绘以显示/隐藏压缩指示。"""
+        self._context_compressing = compressing
         self._invalidate()
 
     # ── 上下文用量 ───
@@ -813,5 +819,11 @@ class TUILayoutManager:
                 usage_text, usage_style = usage_entry
                 spinner_text.append(f" {usage_text}", style=usage_style)
             visible_lines.append(self._render_to_ansi(spinner_text))
+
+        if self._context_compressing:
+            from rich.text import Text as RichText
+            compressing_text = RichText()
+            compressing_text.append("  🗜️ 压缩上下文中...", style=self._theme.dim)
+            visible_lines.append(self._render_to_ansi(compressing_text))
 
         return ANSI("\n".join(visible_lines))

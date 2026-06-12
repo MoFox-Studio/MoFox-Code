@@ -480,3 +480,84 @@ class TUIRenderer:
         """输出用户输入提示符。"""
         self._print(Text(""))
         self._print(Text("  You:", style=f"bold {self._theme.user_prompt}"))
+
+    @staticmethod
+    def _format_tokens(count: int) -> str:
+        """将 token 数量格式化为人类可读字符串。"""
+        if count >= 1_000_000:
+            return f"{count / 1_000_000:.1f}M"
+        if count >= 1_000:
+            return f"{count / 1_000:.1f}k"
+        return str(count)
+
+    @staticmethod
+    def _format_cost(cost: float) -> str:
+        """将花费格式化为人类可读字符串。"""
+        if cost == 0.0:
+            return "$0"
+        if cost < 0.01:
+            return f"${cost:.4f}"
+        return f"${cost:.3f}"
+
+    def render_task_summary(self, records: list[dict]) -> None:
+        """渲染本轮任务用量统计。
+
+        按 model_name 分组汇总，显示输入 tokens、cache hit tokens、输出 tokens 和花费。
+        """
+        if not records:
+            return
+
+        # 按 model_name 分组汇总
+        aggregated: dict[str, dict] = {}
+        for rec in records:
+            model = rec.get("model_name", "") or "unknown"
+            if model not in aggregated:
+                aggregated[model] = {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "cache_hit_tokens": 0,
+                    "cost": 0.0,
+                }
+            aggregated[model]["prompt_tokens"] += rec.get("prompt_tokens", 0)
+            aggregated[model]["completion_tokens"] += rec.get("completion_tokens", 0)
+            aggregated[model]["cache_hit_tokens"] += rec.get("cache_hit_tokens", 0)
+            aggregated[model]["cost"] += rec.get("cost", 0.0)
+
+        # 构建内容
+        content = Text()
+        content.append("📊 本次用量统计\n", style=f"bold {self._theme.accent}")
+
+        for model_name, stats in aggregated.items():
+            prompt = stats["prompt_tokens"]
+            completion = stats["completion_tokens"]
+            cache_hit = stats["cache_hit_tokens"]
+            cost = stats["cost"]
+
+            line = f"  🤖 {model_name}  "
+            content.append(line, style=self._theme.fg)
+            content.append(
+                f"输入: {self._format_tokens(prompt)} tokens",
+                style=self._theme.fg,
+            )
+            if cache_hit > 0:
+                content.append(
+                    f" (cache hit: {self._format_tokens(cache_hit)})",
+                    style=self._theme.dim,
+                )
+            content.append(
+                f"  输出: {self._format_tokens(completion)} tokens",
+                style=self._theme.fg,
+            )
+            if cost > 0:
+                content.append(
+                    f"  花费: {self._format_cost(cost)}",
+                    style=self._theme.warning,
+                )
+            content.append("\n")
+
+        # 去掉末尾换行
+        # 使用 Rule 或分隔线包裹
+        from rich.rule import Rule
+        self._print(Rule(style=self._theme.dim))
+        self._print(content)
+        self._print(Rule(style=self._theme.dim))

@@ -69,6 +69,7 @@ class TUIApp:
         self._thinking_start_time: float = 0.0
         self._last_ctrl_c_time: float = 0.0
         self._welcome_shown: bool = False  # 防止欢迎面板重复显示
+        self._task_usage_log: list[dict] = []  # 累积本轮任务的用量记录
 
         # 注册消息处理器
         self._client.on("session.ready", self._on_session_ready)
@@ -89,6 +90,7 @@ class TUIApp:
         self._client.on("link.result", self._on_link_result)
         self._client.on("goal.complete", self._on_goal_complete)
         self._client.on("agent.context_usage", self._on_context_usage)
+        self._client.on("agent.context_compressing", self._on_context_compressing)
         self._client.on("error", self._on_error)
 
     async def run(self) -> None:
@@ -245,6 +247,7 @@ class TUIApp:
             self._layout.del_slot("agent")
             self._layout.del_slot("thinking")
             self._stream_renderer = None
+            self._task_usage_log = []  # 新一轮任务开始，清空残留用量
 
         self._append_user_message(text, is_guidance=busy)
 
@@ -557,16 +560,33 @@ class TUIApp:
         elif phase == "ready":
             self._collapse_active_thinking_if_needed()
             self._layout.del_slot("research")
+            # 任务完成：渲染本轮用量统计并清空
+            if self._task_usage_log:
+                self._renderer.render_task_summary(self._task_usage_log)
+                self._task_usage_log = []
 
         self._last_status_phase = phase
 
     async def _on_context_usage(self, payload: dict) -> None:
-        """处理 agent.context_usage 消息，更新 footer spinner 旁的上下文用量显示。"""
+        """处理 agent.context_usage 消息，累积用量记录并更新 footer spinner 旁的上下文用量显示。"""
         total_tokens = payload.get("total_tokens", 0)
         max_context = payload.get("max_context", 0)
         source = payload.get("source", "agent")
         if total_tokens:
             self._layout.set_context_usage(total_tokens, max_context, source=source)
+        # 累积用量记录，供任务完成时汇总渲染
+        self._task_usage_log.append({
+            "model_name": payload.get("model_name", ""),
+            "prompt_tokens": payload.get("prompt_tokens", 0),
+            "completion_tokens": payload.get("completion_tokens", 0),
+            "total_tokens": payload.get("total_tokens", 0),
+            "cache_hit_tokens": payload.get("cache_hit_tokens", 0),
+            "cost": payload.get("cost", 0.0),
+        })
+
+    async def _on_context_compressing(self, payload: dict) -> None:
+        """处理 agent.context_compressing 消息，更新布局中的压缩状态标记。"""
+        self._layout.set_context_compressing(payload.get("compressing", False))
 
     async def _on_agent_text(self, payload: dict) -> None:
         content = payload.get("content", "")
