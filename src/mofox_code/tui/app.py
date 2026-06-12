@@ -58,6 +58,7 @@ class TUIApp:
         # 审批队列；同一轮多个 bash 可能并发发来多个审批请求
         self._approval_queue: deque[dict] = deque()
         self._active_stream_source = "agent"
+        self._active_agent_source: str = "agent"  # 当前活跃 agent 标识（用于 footer spinner）
         self._last_status_phase: str | None = None
         self._session_list_cache: list[dict] = []  # 缓存的会话列表（供 resume/delete 编号引用）
         
@@ -87,6 +88,7 @@ class TUIApp:
         self._client.on("session.delete_result", self._on_session_delete_result)
         self._client.on("link.result", self._on_link_result)
         self._client.on("goal.complete", self._on_goal_complete)
+        self._client.on("agent.context_usage", self._on_context_usage)
         self._client.on("error", self._on_error)
 
     async def run(self) -> None:
@@ -171,7 +173,7 @@ class TUIApp:
             # 更新 footer 为输入提示
             busy = self._client.session.is_agent_busy
             self._set_input_footer(busy)
-            self._layout.set_footer_spinner(busy)
+            self._layout.set_footer_spinner(busy, source=self._active_agent_source)
 
             # 获取用户输入
             try:
@@ -504,7 +506,13 @@ class TUIApp:
     async def _on_agent_status(self, payload: dict) -> None:
         phase = payload.get("phase", "")
         detail = payload.get("detail", "")
-        source = payload.get("source", "agent")
+        source = payload.get("source", "")
+        # 仅当消息明确携带 source 时才更新活跃 agent 标识，
+        # 避免未标注 source 的 status 消息意外覆盖（如 bash 自动审查等内部消息）
+        if source:
+            self._active_agent_source = source
+        else:
+            source = self._active_agent_source
         # 更新 header
         self._refresh_header(phase=phase)
         # 在 body 中显示状态信息
@@ -517,7 +525,7 @@ class TUIApp:
             self._anim.stop()
 
         # 同步 footer spinner 可见性（agent busy 状态可能已变化）
-        self._layout.set_footer_spinner(self._client.session.is_agent_busy)
+        self._layout.set_footer_spinner(self._client.session.is_agent_busy, source=self._active_agent_source)
 
         if phase == "thinking":
             if self._last_status_phase != "thinking" and (
@@ -549,6 +557,13 @@ class TUIApp:
             self._layout.del_slot("research")
 
         self._last_status_phase = phase
+
+    async def _on_context_usage(self, payload: dict) -> None:
+        """处理 agent.context_usage 消息，更新 footer spinner 旁的上下文用量显示。"""
+        total_tokens = payload.get("total_tokens", 0)
+        max_context = payload.get("max_context", 0)
+        if total_tokens:
+            self._layout.set_context_usage(total_tokens, max_context)
 
     async def _on_agent_text(self, payload: dict) -> None:
         content = payload.get("content", "")

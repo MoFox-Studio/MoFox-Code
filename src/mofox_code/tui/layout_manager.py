@@ -72,6 +72,7 @@ class TUILayoutManager:
         self._body_scroll = 0
         self._follow_output = True
         self._footer_spinner_visible: bool = False
+        self._footer_spinner_source: str = "agent"
         self._footer_hint = "Enter 发送 | Ctrl+J 换行 | Ctrl+C 中断 | /help"
         self._header_content: RenderableType = Text("")
         self._header_control = FormattedTextControl(self._get_header_text)
@@ -105,6 +106,10 @@ class TUILayoutManager:
         # ── 性能优化：_invalidate 节流 ──
         self._last_invalidate_time: float = 0.0
         self._invalidate_scheduled: bool = False
+
+        # ── 上下文用量显示 ──
+        self._context_usage_text: str = ""
+        self._context_usage_style: str = ""
 
     @property
     def console(self) -> Console:
@@ -306,6 +311,16 @@ class TUILayoutManager:
         self._animated_body_indices.discard(index)
         self._body_anim_factories.pop(index, None)
 
+    @staticmethod
+    def _format_source_label(source: str) -> str:
+        """将 agent source 标识转为显示名称。"""
+        normalized = (source or "agent").strip().lower()
+        if normalized == "coder":
+            return "Coder"
+        if normalized in ("main", "agent"):
+            return "Agent"
+        return normalized.replace("_", " ").title()
+
     # ─── Footer ───
 
     def set_footer_prompt(self) -> None:
@@ -318,15 +333,68 @@ class TUILayoutManager:
         self._footer_hint = hint
         self._invalidate()
 
-    def set_footer_spinner(self, visible: bool) -> None:
+    def set_footer_spinner(self, visible: bool, source: str = "agent") -> None:
         """显示或隐藏 body 底部的 Agent 忙碌旋转指示器。
 
         当 visible=True 时，body 最底部会固定显示一行 braille spinner，
         直观指示 agent 仍在工作中。幂等：状态未变化时忽略。
+
+        Args:
+            visible: 是否显示指示器。
+            source: 当前活跃的 agent 标识（如 "agent"、"coder"），决定显示名称和颜色。
         """
-        if self._footer_spinner_visible == visible:
+        if self._footer_spinner_visible == visible and self._footer_spinner_source == source:
             return
         self._footer_spinner_visible = visible
+        self._footer_spinner_source = source
+        self._invalidate()
+
+    # ── 上下文用量 ───
+
+    @staticmethod
+    def _fmt_tokens(n: int) -> str:
+        """将 token 数格式化为人类可读字符串，如 85000 → '85k'。"""
+        if n >= 1_000_000:
+            val = n / 1_000_000
+            # 整数时省略小数点
+            if val == int(val):
+                return f"{int(val)}m"
+            return f"{val:.1f}m"
+        if n >= 1000:
+            val = n / 1000
+            if val == int(val):
+                return f"{int(val)}k"
+            return f"{val:.1f}k"
+        return str(n)
+
+    def set_context_usage(self, total_tokens: int, max_context: int) -> None:
+        """设置上下文用量显示文本。
+
+        根据 total_tokens 占 max_context 的比例选择颜色：
+        - < 70%: dim 灰色
+        - 70-90%: warning 橙色
+        - > 90%: error 红色
+
+        spinner 隐藏时不清除数据，下次显示时恢复。
+        """
+        used_str = self._fmt_tokens(total_tokens)
+
+        if max_context and max_context > 0:
+            max_str = self._fmt_tokens(max_context)
+            ratio = total_tokens / max_context
+            if ratio < 0.7:
+                style = self._theme.dim
+            elif ratio < 0.9:
+                style = self._theme.warning
+            else:
+                style = self._theme.error
+            self._context_usage_text = f"({used_str}/{max_str})"
+            self._context_usage_style = style
+        else:
+            # max_context 未知时仅显示用量
+            self._context_usage_text = f"({used_str} tokens)"
+            self._context_usage_style = self._theme.dim
+
         self._invalidate()
 
     # ─── 输入 ───
@@ -726,7 +794,22 @@ class TUILayoutManager:
 
         if self._footer_spinner_visible:
             from .animation import AnimationManager
+            from rich.text import Text as RichText
+            
             spinner = AnimationManager.spinner_char(self._anim_frame)
-            visible_lines.append(f"  {spinner} Agent 工作中...")
+            label = self._format_source_label(self._footer_spinner_source)
+            # Agent=success绿, Coder=warning橙, 其他=accent蓝
+            color = {
+                "Agent": self._theme.success,
+                "Coder": self._theme.warning,
+            }.get(label, self._theme.accent)
+            
+            spinner_text = RichText()
+            spinner_text.append(f"  {spinner} ", style=self._theme.dim)
+            spinner_text.append(f"{label}", style=f"bold {color}")
+            spinner_text.append(" 工作中...", style=self._theme.dim)
+            if self._context_usage_text:
+                spinner_text.append(f" {self._context_usage_text}", style=self._context_usage_style)
+            visible_lines.append(self._render_to_ansi(spinner_text))
 
         return ANSI("\n".join(visible_lines))

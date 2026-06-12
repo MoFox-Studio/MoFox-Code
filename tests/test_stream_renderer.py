@@ -100,6 +100,52 @@ class TUILayoutManagerTest(unittest.TestCase):
 
         asyncio.run(runner())
 
+    # ── _fmt_tokens 格式化测试 ──
+
+    def test_fmt_tokens_below_1k_shows_raw_number(self) -> None:
+        self.assertEqual(TUILayoutManager._fmt_tokens(0), "0")
+        self.assertEqual(TUILayoutManager._fmt_tokens(999), "999")
+
+    def test_fmt_tokens_k_range(self) -> None:
+        self.assertEqual(TUILayoutManager._fmt_tokens(1000), "1k")
+        self.assertEqual(TUILayoutManager._fmt_tokens(85000), "85k")
+        self.assertEqual(TUILayoutManager._fmt_tokens(128000), "128k")
+        self.assertEqual(TUILayoutManager._fmt_tokens(999499), "999.5k")
+
+    def test_fmt_tokens_m_range(self) -> None:
+        self.assertEqual(TUILayoutManager._fmt_tokens(1_000_000), "1m")
+        self.assertEqual(TUILayoutManager._fmt_tokens(1_500_000), "1.5m")
+
+    # ── set_context_usage 测试 ──
+
+    def test_context_usage_low_ratio_dim_color(self) -> None:
+        self.layout.set_context_usage(64000, 128000)
+        self.assertIn("(64k/128k)", self.layout._context_usage_text)
+        self.assertEqual(self.layout._context_usage_style, DARK_THEME.dim)
+
+    def test_context_usage_medium_ratio_warning_color(self) -> None:
+        self.layout.set_context_usage(96000, 128000)  # 75%
+        self.assertIn("(96k/128k)", self.layout._context_usage_text)
+        self.assertEqual(self.layout._context_usage_style, DARK_THEME.warning)
+
+    def test_context_usage_high_ratio_error_color(self) -> None:
+        self.layout.set_context_usage(120000, 128000)  # 93.75%
+        self.assertIn("(120k/128k)", self.layout._context_usage_text)
+        self.assertEqual(self.layout._context_usage_style, DARK_THEME.error)
+
+    def test_context_usage_unknown_max_shows_only_tokens(self) -> None:
+        self.layout.set_context_usage(85000, 0)
+        self.assertEqual(self.layout._context_usage_text, "(85k tokens)")
+        self.assertEqual(self.layout._context_usage_style, DARK_THEME.dim)
+
+    def test_context_usage_spinner_renders_with_usage(self) -> None:
+        """验证 spinner 活跃时渲染中包含用量文本。"""
+        self.layout.set_context_usage(85000, 128000)
+        self.layout.set_footer_spinner(True, source="agent")
+        body_text = str(self.layout._get_body_text())
+        self.assertIn("(85k/128k)", body_text)
+        self.assertIn("工作中...", body_text)
+
 
 class SlotMechanismTest(unittest.TestCase):
     """命名槽位（slot）机制单元测试：验证裁剪/插入时索引自动修正。"""

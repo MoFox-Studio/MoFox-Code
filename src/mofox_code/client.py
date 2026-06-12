@@ -147,9 +147,13 @@ class CodingAgentClient:
         self._session.yolo_mode = enabled
 
     async def send_goal(self, text: str) -> None:
-        """设定目标并进入目标模式。"""
+        """设定目标并进入目标模式。
+
+        仅发送 goal.set 到后端，后端 handler 会注入首次消息触发 agent。
+        不额外发送 user.message 以避免双重触发。
+        """
         await self.send("goal.set", {"text": text})
-        await self.send_user_message(f"【目标】{text}")
+        self._session.is_agent_busy = True
         self._session.goal_mode = True
         self._session.goal_text = text
 
