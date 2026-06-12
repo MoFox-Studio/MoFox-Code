@@ -92,4 +92,4 @@ htmlcov/
 .claude/
 .agents/
 skills-lock.json
-src/mofox_code/tui/__pycache__/*
+
