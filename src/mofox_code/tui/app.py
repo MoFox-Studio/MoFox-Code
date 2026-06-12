@@ -69,7 +69,8 @@ class TUIApp:
         self._thinking_start_time: float = 0.0
         self._last_ctrl_c_time: float = 0.0
         self._welcome_shown: bool = False  # 防止欢迎面板重复显示
-        self._task_usage_log: list[dict] = []  # 累积本轮任务的用量记录
+        self._session_usage: dict[str, dict] = {}  # 会话累计用量（按 model_name 索引）
+        self._last_session_id: str | None = None  # 用于检测 session 切换
 
         # 注册消息处理器
         self._client.on("session.ready", self._on_session_ready)
@@ -247,7 +248,6 @@ class TUIApp:
             self._layout.del_slot("agent")
             self._layout.del_slot("thinking")
             self._stream_renderer = None
-            self._task_usage_log = []  # 新一轮任务开始，清空残留用量
 
         self._append_user_message(text, is_guidance=busy)
 
@@ -388,6 +388,9 @@ class TUIApp:
             case BuiltinCommandType.HELP:
                 self._input_handler.render_help()
 
+            case BuiltinCommandType.USAGE:
+                self._renderer.render_session_usage(self._session_usage)
+
             case BuiltinCommandType.NONE:
                 self._layout.append_body(
                     Text("  未知命令，输入 /help 查看帮助", style=self._theme.dim)
@@ -470,7 +473,13 @@ class TUIApp:
 
     async def _on_session_ready(self, payload: dict) -> None:
         title = payload.get("title", "")
+        session_id = payload.get("session_id", "")
         self._refresh_header(phase="ready")
+
+        # 检测 session 切换：session_id 变化时清空累计用量
+        if self._last_session_id is not None and session_id != self._last_session_id:
+            self._session_usage = {}
+        self._last_session_id = session_id
         if title:
             # 恢复会话：不显示艺术字 banner，仅显示恢复提示
             self._layout.append_body(
@@ -560,29 +569,50 @@ class TUIApp:
         elif phase == "ready":
             self._collapse_active_thinking_if_needed()
             self._layout.del_slot("research")
-            # 任务完成：渲染本轮用量统计并清空
-            if self._task_usage_log:
-                self._renderer.render_task_summary(self._task_usage_log)
-                self._task_usage_log = []
+            # 任务完成：渲染会话累计用量
+            if self._session_usage:
+                self._renderer.render_session_usage(self._session_usage)
 
         self._last_status_phase = phase
 
     async def _on_context_usage(self, payload: dict) -> None:
-        """处理 agent.context_usage 消息，累积用量记录并更新 footer spinner 旁的上下文用量显示。"""
+        """处理 agent.context_usage 消息，更新 footer spinner 旁的上下文用量显示，并累积会话用量。
+
+        当 payload.is_cumulative=True 时，payload 是后端发来的会话累计值，直接按 model_name 替换。
+        否则按旧逻辑追加（向后兼容）。
+        """
         total_tokens = payload.get("total_tokens", 0)
         max_context = payload.get("max_context", 0)
         source = payload.get("source", "agent")
         if total_tokens:
             self._layout.set_context_usage(total_tokens, max_context, source=source)
-        # 累积用量记录，供任务完成时汇总渲染
-        self._task_usage_log.append({
-            "model_name": payload.get("model_name", ""),
-            "prompt_tokens": payload.get("prompt_tokens", 0),
-            "completion_tokens": payload.get("completion_tokens", 0),
-            "total_tokens": payload.get("total_tokens", 0),
-            "cache_hit_tokens": payload.get("cache_hit_tokens", 0),
-            "cost": payload.get("cost", 0.0),
-        })
+
+        model_name = payload.get("model_name", "")
+        is_cumulative = payload.get("is_cumulative", False)
+        if is_cumulative:
+            # 后端发来的累计值，直接按 model_name 替换
+            self._session_usage[model_name] = {
+                "prompt_tokens": payload.get("prompt_tokens", 0),
+                "completion_tokens": payload.get("completion_tokens", 0),
+                "total_tokens": payload.get("total_tokens", 0),
+                "cache_hit_tokens": payload.get("cache_hit_tokens", 0),
+                "cost": payload.get("cost", 0.0),
+            }
+        else:
+            # 旧逻辑：追加累加（向后兼容）
+            if model_name not in self._session_usage:
+                self._session_usage[model_name] = {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "cache_hit_tokens": 0,
+                    "cost": 0.0,
+                }
+            self._session_usage[model_name]["prompt_tokens"] += payload.get("prompt_tokens", 0)
+            self._session_usage[model_name]["completion_tokens"] += payload.get("completion_tokens", 0)
+            self._session_usage[model_name]["total_tokens"] += payload.get("total_tokens", 0)
+            self._session_usage[model_name]["cache_hit_tokens"] += payload.get("cache_hit_tokens", 0)
+            self._session_usage[model_name]["cost"] += payload.get("cost", 0.0)
 
     async def _on_context_compressing(self, payload: dict) -> None:
         """处理 agent.context_compressing 消息，更新布局中的压缩状态标记。"""

@@ -499,39 +499,23 @@ class TUIRenderer:
             return f"${cost:.4f}"
         return f"${cost:.3f}"
 
-    def render_task_summary(self, records: list[dict]) -> None:
-        """渲染本轮任务用量统计。
+    def render_session_usage(self, usage: dict[str, dict]) -> None:
+        """渲染会话累计用量统计。
 
-        按 model_name 分组汇总，显示输入 tokens、cache hit tokens、输出 tokens 和花费。
+        入参是按 model_name 索引的 dict，每个 value 包含 prompt_tokens/completion_tokens/cache_hit_tokens/cost。
         """
-        if not records:
+        if not usage:
             return
-
-        # 按 model_name 分组汇总
-        aggregated: dict[str, dict] = {}
-        for rec in records:
-            model = rec.get("model_name", "") or "unknown"
-            if model not in aggregated:
-                aggregated[model] = {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "cache_hit_tokens": 0,
-                    "cost": 0.0,
-                }
-            aggregated[model]["prompt_tokens"] += rec.get("prompt_tokens", 0)
-            aggregated[model]["completion_tokens"] += rec.get("completion_tokens", 0)
-            aggregated[model]["cache_hit_tokens"] += rec.get("cache_hit_tokens", 0)
-            aggregated[model]["cost"] += rec.get("cost", 0.0)
 
         # 构建内容
         content = Text()
-        content.append("📊 本次用量统计\n", style=f"bold {self._theme.accent}")
+        content.append("📊 会话累计用量\n", style=f"bold {self._theme.accent}")
 
-        for model_name, stats in aggregated.items():
-            prompt = stats["prompt_tokens"]
-            completion = stats["completion_tokens"]
-            cache_hit = stats["cache_hit_tokens"]
-            cost = stats["cost"]
+        for model_name, stats in usage.items():
+            prompt = stats.get("prompt_tokens", 0)
+            completion = stats.get("completion_tokens", 0)
+            cache_hit = stats.get("cache_hit_tokens", 0)
+            cost = stats.get("cost", 0.0)
 
             line = f"  🤖 {model_name}  "
             content.append(line, style=self._theme.fg)
@@ -555,8 +539,7 @@ class TUIRenderer:
                 )
             content.append("\n")
 
-        # 去掉末尾换行
-        # 使用 Rule 或分隔线包裹
+        # 使用 Rule 分隔线包裹
         from rich.rule import Rule
         self._print(Rule(style=self._theme.dim))
         self._print(content)

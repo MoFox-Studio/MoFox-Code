@@ -794,8 +794,8 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TaskSummaryRendererTest(unittest.TestCase):
-    """测试 TUIRenderer.render_task_summary 方法。"""
+class SessionUsageRendererTest(unittest.TestCase):
+    """测试 TUIRenderer.render_session_usage 方法。"""
 
     def setUp(self) -> None:
         self.console = Console(record=True, width=120)
@@ -808,79 +808,69 @@ class TaskSummaryRendererTest(unittest.TestCase):
 
         self.renderer = TUIRenderer(self.console, DARK_THEME, output=capture)
 
-    def test_render_task_summary_single_model(self) -> None:
+    def test_render_session_usage_single_model(self) -> None:
         """单个模型的用量统计。"""
-        records = [{
-            "model_name": "deepseek-v4-pro",
-            "prompt_tokens": 85000,
-            "completion_tokens": 2500,
-            "total_tokens": 87500,
-            "cache_hit_tokens": 12000,
-            "cost": 0.023,
-        }]
-        self.renderer.render_task_summary(records)
+        usage = {
+            "deepseek-v4-pro": {
+                "prompt_tokens": 85000,
+                "completion_tokens": 2500,
+                "total_tokens": 87500,
+                "cache_hit_tokens": 12000,
+                "cost": 0.023,
+            }
+        }
+        self.renderer.render_session_usage(usage)
         combined = "\n".join(self.outputs)
         self.assertIn("deepseek-v4-pro", combined)
         self.assertIn("85.0k", combined)
         self.assertIn("2.5k", combined)
         self.assertIn("12.0k", combined)
+        self.assertIn("会话累计用量", combined)
 
-    def test_render_task_summary_multiple_models(self) -> None:
-        """多个模型分组汇总。"""
-        records = [
-            {
-                "model_name": "deepseek-v4-pro",
-                "prompt_tokens": 50000,
-                "completion_tokens": 1000,
-                "total_tokens": 51000,
-                "cache_hit_tokens": 5000,
-                "cost": 0.01,
+    def test_render_session_usage_multiple_models(self) -> None:
+        """多个模型各自的累计用量。"""
+        usage = {
+            "deepseek-v4-pro": {
+                "prompt_tokens": 80000,
+                "completion_tokens": 3000,
+                "total_tokens": 83000,
+                "cache_hit_tokens": 8000,
+                "cost": 0.018,
             },
-            {
-                "model_name": "deepseek-v4-pro",
-                "prompt_tokens": 30000,
-                "completion_tokens": 2000,
-                "total_tokens": 32000,
-                "cache_hit_tokens": 3000,
-                "cost": 0.008,
-            },
-            {
-                "model_name": "claude-sonnet-4",
+            "claude-sonnet-4": {
                 "prompt_tokens": 100000,
                 "completion_tokens": 5000,
                 "total_tokens": 105000,
                 "cache_hit_tokens": 0,
                 "cost": 0.15,
             },
-        ]
-        self.renderer.render_task_summary(records)
+        }
+        self.renderer.render_session_usage(usage)
         combined = "\n".join(self.outputs)
         # 两个模型都应出现
         self.assertIn("deepseek-v4-pro", combined)
         self.assertIn("claude-sonnet-4", combined)
-        # deepseek 的 prompt_tokens 应合并为 80000
         self.assertIn("80.0k", combined)
-        # deepseek 的 cache_hit_tokens 应合并为 8000
         self.assertIn("8.0k", combined)
-        # deepseek 的 completion_tokens 应合并为 3000
         self.assertIn("3.0k", combined)
 
-    def test_render_task_summary_empty_records(self) -> None:
-        """空记录不渲染任何内容。"""
-        self.renderer.render_task_summary([])
+    def test_render_session_usage_empty(self) -> None:
+        """空 dict 不渲染任何内容。"""
+        self.renderer.render_session_usage({})
         self.assertEqual(len(self.outputs), 0)
 
-    def test_render_task_summary_no_cache_hit(self) -> None:
+    def test_render_session_usage_no_cache_hit(self) -> None:
         """cache_hit_tokens 为 0 时不显示 cache hit 信息。"""
-        records = [{
-            "model_name": "gpt-4o",
-            "prompt_tokens": 1000,
-            "completion_tokens": 500,
-            "total_tokens": 1500,
-            "cache_hit_tokens": 0,
-            "cost": 0.0,
-        }]
-        self.renderer.render_task_summary(records)
+        usage = {
+            "gpt-4o": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 500,
+                "total_tokens": 1500,
+                "cache_hit_tokens": 0,
+                "cost": 0.0,
+            }
+        }
+        self.renderer.render_session_usage(usage)
         combined = "\n".join(self.outputs)
         self.assertIn("gpt-4o", combined)
         # cache hit 不应出现（因为为 0）

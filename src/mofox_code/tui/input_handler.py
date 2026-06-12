@@ -19,7 +19,7 @@ class CommandCompleter(Completer):
         "/exit", "/clear", "/undo", "/rollback", "/history",
         "/status", "/auto-review on", "/auto-review off",
         "/help", "/session", "/session resume", "/session delete",
-        "/link", "/new", "/yolo", "/goal",
+        "/link", "/new", "/yolo", "/goal", "/usage",
     ]
     
     def get_completions(self, document, complete_event):
@@ -45,6 +45,7 @@ class BuiltinCommandType(str, Enum):
     SESSION = "session"
     LINK = "link"
     NEW = "new"
+    USAGE = "usage"
     NONE = "none"  # 非内置命令
 
 
@@ -159,6 +160,8 @@ class InputHandler:
                 return BuiltinCommandResult(BuiltinCommandType.GOAL, {"text": goal_text})
             case "/help":
                 return BuiltinCommandResult(BuiltinCommandType.HELP)
+            case "/usage":
+                return BuiltinCommandResult(BuiltinCommandType.USAGE)
             case _:
                 return BuiltinCommandResult(BuiltinCommandType.NONE)
 
@@ -181,6 +184,7 @@ class InputHandler:
         table.add_row("/link <路径>", "关联外部项目目录")
         table.add_row("/new", "开启新对话")
         table.add_row("/session", "列出/恢复/删除历史会话")
+        table.add_row("/usage", "显示会话累计用量")
         table.add_row("直接输入", "Agent 工作中可追加补充引导，当前回合结束后处理")
         table.add_row("/help", "显示此帮助")
         self._print(table)
